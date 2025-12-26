@@ -3,16 +3,16 @@ from __future__ import annotations
 import re
 import threading
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from io import BytesIO
+import os
+import tempfile
 
-import numpy as np
 from PIL import Image
 
-# PaddleOCR docs (Python API):
-# result = ocr.ocr(img_path_or_array, cls=True)
-# each line: [ [[x1,y1], [x2,y2], [x3,y3], [x4,y4]], (text, score) ]
-from paddleocr import PaddleOCR
+from paddleocr import PaddleOCRVL
+
+import paddle
 
 from app.schemas.models import FormField
 
@@ -120,51 +120,125 @@ class OcrResult:
 class OCRService:
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._ocr: Optional[PaddleOCR] = None
+        self._vl: Any = None
 
-    def _get_ocr(self) -> PaddleOCR:
-        # Lazy init so importing the app doesn't immediately download models.
-        # On first call, PaddleOCR may download weights.
-        if self._ocr is not None:
-            return self._ocr
+    def _select_device(self) -> str:
+        """Return a PaddleOCRVL device string.
+
+        Env:
+        - OCR_DEVICE: 'auto' (default), 'cpu', 'gpu', 'gpu:0', ...
+        """
+
+        requested = (os.getenv("OCR_DEVICE") or "auto").strip().lower()
+        if requested in {"auto", ""}:
+            return "gpu:0" if paddle.is_compiled_with_cuda() else "cpu"
+
+        if requested.startswith("gpu") and not paddle.is_compiled_with_cuda():
+            raise RuntimeError(
+                "GPU was requested (OCR_DEVICE=gpu) but PaddlePaddle is CPU-only in this environment. "
+                "Install a CUDA-enabled PaddlePaddle build (paddlepaddle-gpu) matching your CUDA version."
+            )
+
+        if requested == "gpu":
+            return "gpu:0"
+
+        return requested
+
+    def _get_vl(self):
+        """Lazy-init PaddleOCRVL pipeline.
+
+        Note: PaddleOCRVL requires extra dependencies (see backend/README.md).
+        """
+        if self._vl is not None:
+            return self._vl
+
+        device = self._select_device()
 
         with self._lock:
-            if self._ocr is None:
-                # CPU only. PaddleOCR supports `use_gpu` in many versions.
-                self._ocr = PaddleOCR(use_angle_cls=True, lang="en", use_gpu=False)
-        return self._ocr
+            if self._vl is None:
+                try:
+                    self._vl = PaddleOCRVL(device=device)  # type: ignore[misc]
+                except TypeError:
+                    self._vl = PaddleOCRVL()  # type: ignore[misc]
+        return self._vl
 
     def run_ocr(self, image_bytes: bytes) -> OcrResult:
         try:
             pil = Image.open(BytesIO(image_bytes)).convert("RGB")
         except Exception as e:
-            raise ValueError("Invalid image data") from e
-        img = np.array(pil)
-
-        ocr = self._get_ocr()
-        raw = ocr.ocr(img, cls=True)
-
-        # raw is typically a list of pages; for a single image it is [page0]
-        page0 = raw[0] if isinstance(raw, list) and raw else []
+            head = image_bytes[:16].hex()
+            raise ValueError(f"Invalid image data (len={len(image_bytes)} head={head})") from e
+        pipeline = self._get_vl()
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tmp:
+            pil.save(tmp, format="PNG")
+            tmp.flush()
+            output = pipeline.predict(tmp.name)
 
         items: List[Dict[str, Any]] = []
-        for line in page0 or []:
-            try:
-                points = line[0]
-                text = line[1][0]
-                score = float(line[1][1])
-                bbox = _bbox_points_to_xyxy(points)
-                items.append(
-                    {
-                        "text": text,
-                        "score": score,
-                        "bbox": bbox,
-                        "points": points,
-                    }
-                )
-            except Exception:
-                # Best-effort: skip malformed lines.
+        for res in output or []:
+            if not isinstance(res, dict):
                 continue
+
+            # Prefer line-level OCR output if present.
+            ocr_result = res.get("ocr_result")
+            if isinstance(ocr_result, list) and ocr_result:
+                for r in ocr_result:
+                    if not isinstance(r, dict):
+                        continue
+                    text = str(r.get("text", "") or "").strip()
+                    if not text:
+                        continue
+
+                    bbox_raw = r.get("bbox")
+                    if not bbox_raw:
+                        continue
+
+                    bbox: Optional[List[int]] = None
+                    points: Optional[List[List[float]]] = None
+
+                    if isinstance(bbox_raw, (list, tuple)) and len(bbox_raw) == 4 and not isinstance(bbox_raw[0], (list, tuple)):
+                        bbox = [int(bbox_raw[0]), int(bbox_raw[1]), int(bbox_raw[2]), int(bbox_raw[3])]
+                    elif isinstance(bbox_raw, (list, tuple)) and len(bbox_raw) == 4 and isinstance(bbox_raw[0], (list, tuple)):
+                        points = [[float(p[0]), float(p[1])] for p in bbox_raw]  # type: ignore[index]
+                        bbox = _bbox_points_to_xyxy(points)
+
+                    if not bbox:
+                        continue
+
+                    score_raw = r.get("score", r.get("rec_score", 1.0))
+                    try:
+                        score = float(score_raw)
+                    except Exception:
+                        score = 1.0
+
+                    items.append({"text": text, "score": score, "bbox": bbox, "points": points})
+                continue
+
+            # Fallback: document parsing layout regions (coarser regions).
+            layout = res.get("layout_parsing_result")
+            if isinstance(layout, dict):
+                regions = layout.get("layout_regions", [])
+                if isinstance(regions, list):
+                    for region in regions:
+                        if not isinstance(region, dict):
+                            continue
+                        text = str(region.get("text", "") or "").strip()
+                        if not text:
+                            continue
+                        bbox_raw = region.get("bbox")
+                        if not (isinstance(bbox_raw, (list, tuple)) and len(bbox_raw) == 4):
+                            continue
+                        try:
+                            bbox = [int(bbox_raw[0]), int(bbox_raw[1]), int(bbox_raw[2]), int(bbox_raw[3])]
+                        except Exception:
+                            continue
+                        items.append({"text": text, "score": 1.0, "bbox": bbox, "points": None})
+
+        if not items:
+            raise RuntimeError(
+                "PaddleOCRVL returned no OCR items. "
+                "If you're seeing a dependency error, install `paddleocr[doc-parser]` and `paddlex[ocr]`."
+            )
 
         fields = _infer_fields_from_ocr_items(items)
         return OcrResult(items=items, fields=fields)
