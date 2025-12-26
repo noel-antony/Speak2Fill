@@ -1,43 +1,34 @@
+/// Speak2Fill - Voice-First AI Assistant for Filling Paper Forms
+///
+/// This app helps low-literacy users fill physical paper forms by guiding them
+/// step-by-step using voice and visual writing guidance (whiteboard).
+///
+/// Flow: UploadScreen → ChatScreen ↔ WhiteboardScreen
+library;
+
 import 'package:flutter/material.dart';
+import 'screens/upload_screen.dart';
 
 void main() {
-  runApp(const MyApp());
+  runApp(const Speak2FillApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class Speak2FillApp extends StatelessWidget {
+  const Speak2FillApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Speak2Fill',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.blue,
+          brightness: Brightness.light,
+        ),
         useMaterial3: true,
       ),
-      home: const HomePage(),
-    );
-  }
-}
-
-class HomePage extends StatefulWidget {
-  const HomePage({super.key});
-
-  @override
-  State<HomePage> createState() => _HomePageState();
-}
-
-class _HomePageState extends State<HomePage> {
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Speak2Fill'),
-        centerTitle: true,
-      ),
-      body: const Center(
-        child: Text('Welcome to Speak2Fill'),
-      ),
+      home: const UploadScreen(),
     );
   }
 }
