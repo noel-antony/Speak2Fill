@@ -15,8 +15,18 @@ class FormField(BaseModel):
     bbox: List[int] = Field(..., min_length=4, max_length=4, description="[x1,y1,x2,y2]")
 
 
+class OcrItem(BaseModel):
+    text: str
+    score: float
+    bbox: List[int] = Field(..., min_length=4, max_length=4, description="[x1,y1,x2,y2]")
+    points: Optional[List[List[float]]] = Field(
+        default=None, description="Quadrilateral points: [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]"
+    )
+
+
 class UploadFormResponse(BaseModel):
     session_id: str
+    ocr_items: List[OcrItem]
     fields: List[FormField]
 
 

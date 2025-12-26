@@ -5,11 +5,14 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from app.main import create_app
-
 
 @pytest.fixture()
-def app():
+def app(tmp_path, monkeypatch):
+    # Ensure each test run uses an isolated DB file.
+    monkeypatch.setenv("SPEAK2FILL_DB_PATH", str(tmp_path / "test.db"))
+
+    from app.main import create_app
+
     return create_app()
 
 
