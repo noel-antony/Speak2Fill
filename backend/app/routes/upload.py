@@ -1,7 +1,7 @@
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
-from app.schemas.models import UploadFormResponse
-from app.services.memory_service import memory
+from app.schemas.models import OcrItem, UploadFormResponse
+from app.services.storage_service import store
 from app.services.ocr_service import ocr_service
 
 router = APIRouter(tags=["forms"])
@@ -18,12 +18,16 @@ async def upload_form(file: UploadFile = File(...)) -> UploadFormResponse:
 
     try:
         ocr_result = ocr_service.run_ocr(image_bytes=image_bytes)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid or unsupported image.")
-    session_id = memory.create_session(
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    session_id = store.create_session(
         filename=file.filename or "uploaded_image",
         ocr_items=ocr_result.items,
         fields=ocr_result.fields,
     )
 
-    return UploadFormResponse(session_id=session_id, fields=ocr_result.fields)
+    return UploadFormResponse(
+        session_id=session_id,
+        ocr_items=[OcrItem(**item) for item in ocr_result.items],
+        fields=ocr_result.fields,
+    )
