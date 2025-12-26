@@ -1,0 +1,65 @@
+# ---------- OS / Editor ----------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Logs
+*.log
+
+# Env files
+.env
+.env.*
+!.env.example
+
+# ---------- FastAPI / Uvicorn ----------
+*.pid
+
+# ---------- Flutter / Dart ----------
+.dart_tool/
+.packages
+.pub/
+.pub-cache/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+
+# Build outputs
+build/
+**/build/
+
+# Android
+**/android/.gradle/
+**/android/local.properties
+**/android/key.properties
+
+# iOS
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Flutter.podspec
+**/ios/Flutter/App.framework
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/ephemeral/
+
+# Web
+**/.dart_tool/
+
+# ---------- Node (if added later) ----------
+node_modules/
