@@ -24,33 +24,52 @@ class _ChatScreenState extends State<ChatScreen> {
   // Mock field index to simulate multiple form fields
   int _currentFieldIndex = 0;
 
-  // Mock form fields for demonstration
+  // Mock image dimensions (simulating OCR response)
+  // In real app, these come from the backend with OCR results
+  static const double _mockImageWidth = 1200.0;
+  static const double _mockImageHeight = 1600.0;
+
+  // Mock form fields with realistic OCR-style bounding boxes
+  // bbox format: [x1, y1, x2, y2] in image coordinates
   final List<Map<String, dynamic>> _mockFields = [
     {
+      'label': 'Name',
       'question': 'I will help you fill this form. What is your name?',
       'response': 'Please write your name in the highlighted box.',
       'action': {
         'type': 'DRAW_GUIDE',
         'text': 'RAVI KUMAR',
-        'bbox': [50, 100, 300, 150],
+        'bbox': [280.0, 200.0, 900.0, 280.0],
       },
     },
     {
+      'label': 'Date of Birth',
       'question': 'Great! Now, what is your date of birth?',
       'response': 'Please write your date of birth in the highlighted box.',
       'action': {
         'type': 'DRAW_GUIDE',
         'text': '15/08/1990',
-        'bbox': [50, 180, 250, 230],
+        'bbox': [280.0, 350.0, 650.0, 430.0],
       },
     },
     {
+      'label': 'Phone Number',
       'question': 'What is your phone number?',
       'response': 'Please write your phone number in the highlighted box.',
       'action': {
         'type': 'DRAW_GUIDE',
         'text': '9876543210',
-        'bbox': [50, 260, 280, 310],
+        'bbox': [280.0, 500.0, 700.0, 580.0],
+      },
+    },
+    {
+      'label': 'Address',
+      'question': 'What is your address?',
+      'response': 'Please write your address in the highlighted box.',
+      'action': {
+        'type': 'DRAW_GUIDE',
+        'text': '123 MAIN STREET, MUMBAI',
+        'bbox': [280.0, 650.0, 1000.0, 730.0],
       },
     },
   ];
@@ -146,16 +165,18 @@ class _ChatScreenState extends State<ChatScreen> {
         if (!mounted) return;
         _navigateToWhiteboard(
           textToWrite: action['text'],
-          bbox: List<int>.from(action['bbox']),
+          bbox: List<double>.from(action['bbox']),
+          fieldLabel: currentField['label'] ?? 'Field',
         );
       });
     }
   }
 
-  /// Navigate to WhiteboardScreen
+  /// Navigate to WhiteboardScreen with OCR-style parameters
   void _navigateToWhiteboard({
     required String textToWrite,
-    required List<int> bbox,
+    required List<double> bbox,
+    required String fieldLabel,
   }) async {
     await Navigator.push(
       context,
@@ -163,6 +184,9 @@ class _ChatScreenState extends State<ChatScreen> {
         builder: (context) => WhiteboardScreen(
           textToWrite: textToWrite,
           boundingBox: bbox,
+          imageWidth: _mockImageWidth,
+          imageHeight: _mockImageHeight,
+          fieldLabel: fieldLabel,
         ),
       ),
     );
