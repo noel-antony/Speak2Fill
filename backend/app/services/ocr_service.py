@@ -245,16 +245,31 @@ class OCRService:
         """Lazy-init PaddleOCRVL pipeline.
 
         Note: PaddleOCRVL requires extra dependencies (see backend/README.md).
+        
+        For low VRAM GPUs (4GB), set environment variable:
+        - FLAGS_fraction_of_gpu_memory_to_use=0.65 (use 65% of GPU memory)
         """
         if self._vl is not None:
             return self._vl
 
         device = self._select_device()
+        
+        # Set memory optimization for low VRAM GPUs via environment variable
+        # FLAGS_fraction_of_gpu_memory_to_use should be set before starting
+        if device.startswith("gpu"):
+            mem_fraction = os.getenv("FLAGS_fraction_of_gpu_memory_to_use", "0.65")
+            if "FLAGS_fraction_of_gpu_memory_to_use" not in os.environ:
+                os.environ["FLAGS_fraction_of_gpu_memory_to_use"] = str(mem_fraction)
 
         with self._lock:
             if self._vl is None:
                 try:
-                    self._vl = PaddleOCRVL(device=device)  # type: ignore[misc]
+                    # Use lower batch size and enable memory optimization for small GPUs
+                    self._vl = PaddleOCRVL(
+                        device=device,
+                        use_doc_orientation_classify=False,  # Disable to save memory
+                        use_doc_unwarping=False,  # Disable to save memory
+                    )  # type: ignore[misc]
                 except TypeError:
                     self._vl = PaddleOCRVL()  # type: ignore[misc]
         return self._vl

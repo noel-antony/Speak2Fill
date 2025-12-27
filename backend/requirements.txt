@@ -10,7 +10,11 @@ pytest>=7.4
 paddleocr[doc-parser]>=3.3
 paddlex[ocr]>=3.3
 
-# For GPU support, install paddlepaddle-gpu:
-# pip install paddlepaddle-gpu -f https://www.paddlepaddle.org.cn/whl/linux/gpu/develop.html
-# For CPU only:
-# pip install paddlepaddle>=3.2
+# GPU Installation (requires CUDA 11.8+, Python 3.8-3.12):
+# 1. Install PaddlePaddle GPU (CUDA 11.8):
+#    pip install paddlepaddle-gpu==3.2.1 -i https://www.paddlepaddle.org.cn/packages/stable/cu118/
+# 2. Install special safetensors version:
+#    pip install https://paddle-whl.bj.bcebos.com/nightly/cu126/safetensors/safetensors-0.6.2.dev0-cp38-abi3-linux_x86_64.whl
+#
+# CPU Installation:
+#    pip install paddlepaddle>=3.2
