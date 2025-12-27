@@ -13,6 +13,8 @@ class FormField(BaseModel):
     label: str = Field(..., description="Best-effort field label, e.g., Name, DOB")
     text: str = Field("", description="(Optional) extracted or user-filled value")
     bbox: List[int] = Field(..., min_length=4, max_length=4, description="[x1,y1,x2,y2]")
+    input_mode: str = Field("voice", description="voice or placeholder")
+    write_language: str = Field("en", description="en, ml, or numeric")
 
 
 class OcrItem(BaseModel):
@@ -33,6 +35,16 @@ class UploadFormResponse(BaseModel):
 class ChatRequest(BaseModel):
     session_id: str
     user_message: str
+
+
+class AnalyzeFormRequest(BaseModel):
+    session_id: str
+
+
+class AnalyzeFormResponse(BaseModel):
+    session_id: str
+    fields_count: int
+    message: str
 
 
 class WhiteboardAction(BaseModel):

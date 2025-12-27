@@ -38,7 +38,11 @@ def _init_db(conn: sqlite3.Connection) -> None:
             filename TEXT NOT NULL,
             ocr_items_json TEXT NOT NULL,
             fields_json TEXT NOT NULL,
-            current_field_index INTEGER NOT NULL DEFAULT 0
+            current_field_index INTEGER NOT NULL DEFAULT 0,
+            filled_fields_json TEXT NOT NULL DEFAULT '{}',
+            language TEXT NOT NULL DEFAULT 'en',
+            image_width INTEGER NOT NULL DEFAULT 0,
+            image_height INTEGER NOT NULL DEFAULT 0
         );
         """
     )
@@ -77,19 +81,28 @@ class SQLiteSessionStore:
             finally:
                 conn.close()
 
-    def create_session(self, filename: str, ocr_items: List[Dict[str, Any]], fields: List[FormField]) -> str:
+    def create_session(
+        self,
+        filename: str,
+        ocr_items: List[Dict[str, Any]],
+        fields: List[FormField],
+        image_width: int = 0,
+        image_height: int = 0,
+    ) -> str:
         session_id = str(uuid4())
         created_at = time.time()
 
         def _op(conn: sqlite3.Connection) -> str:
             conn.execute(
-                "INSERT INTO sessions(session_id, created_at, filename, ocr_items_json, fields_json, current_field_index) VALUES (?, ?, ?, ?, ?, 0)",
+                "INSERT INTO sessions(session_id, created_at, filename, ocr_items_json, fields_json, current_field_index, filled_fields_json, language, image_width, image_height) VALUES (?, ?, ?, ?, ?, 0, '{}', 'en', ?, ?)",
                 (
                     session_id,
                     created_at,
                     filename,
                     json.dumps(ocr_items, ensure_ascii=False),
                     json.dumps([f.model_dump() for f in fields], ensure_ascii=False),
+                    image_width,
+                    image_height,
                 ),
             )
             conn.commit()
@@ -100,11 +113,33 @@ class SQLiteSessionStore:
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         def _op(conn: sqlite3.Connection) -> Optional[Dict[str, Any]]:
             row = conn.execute(
-                "SELECT session_id, created_at, filename, ocr_items_json, fields_json, current_field_index FROM sessions WHERE session_id = ?",
+                "SELECT session_id, created_at, filename, ocr_items_json, fields_json, current_field_index, filled_fields_json, language, image_width, image_height FROM sessions WHERE session_id = ?",
                 (session_id,),
             ).fetchone()
             if row is None:
                 return None
+            
+            # Handle potential missing columns for backward compatibility
+            try:
+                filled_fields_json = row["filled_fields_json"]
+            except (KeyError, IndexError):
+                filled_fields_json = "{}"
+            
+            try:
+                language = row["language"]
+            except (KeyError, IndexError):
+                language = "en"
+            
+            try:
+                image_width = int(row["image_width"])
+            except (KeyError, IndexError):
+                image_width = 0
+            
+            try:
+                image_height = int(row["image_height"])
+            except (KeyError, IndexError):
+                image_height = 0
+            
             return {
                 "session_id": row["session_id"],
                 "created_at": row["created_at"],
@@ -112,6 +147,10 @@ class SQLiteSessionStore:
                 "ocr_items": json.loads(row["ocr_items_json"]),
                 "fields": json.loads(row["fields_json"]),
                 "current_field_index": int(row["current_field_index"]),
+                "filled_fields": json.loads(filled_fields_json),
+                "language": language,
+                "image_width": image_width,
+                "image_height": image_height,
             }
 
         return self._with_db(_op)
@@ -149,6 +188,38 @@ class SQLiteSessionStore:
             conn.execute(
                 "UPDATE sessions SET current_field_index = current_field_index + 1 WHERE session_id = ?",
                 (session_id,),
+            )
+            conn.commit()
+
+        self._with_db(_op)
+
+    def update_filled_field(self, session_id: str, field_label: str, value: str) -> None:
+        """Update a specific field value in the filled_fields map."""
+
+        def _op(conn: sqlite3.Connection) -> None:
+            row = conn.execute(
+                "SELECT filled_fields_json FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return
+            filled_fields = json.loads(row["filled_fields_json"])
+            filled_fields[field_label] = value
+            conn.execute(
+                "UPDATE sessions SET filled_fields_json = ? WHERE session_id = ?",
+                (json.dumps(filled_fields, ensure_ascii=False), session_id),
+            )
+            conn.commit()
+
+        self._with_db(_op)
+
+    def update_fields(self, session_id: str, fields: List[Dict[str, Any]]) -> None:
+        """Replace the entire fields list for a session (used by /analyze-form)."""
+
+        def _op(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE sessions SET fields_json = ?, current_field_index = 0 WHERE session_id = ?",
+                (json.dumps(fields, ensure_ascii=False), session_id),
             )
             conn.commit()
 

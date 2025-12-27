@@ -5,6 +5,8 @@ python-multipart>=0.0.9
 pillow>=10.0
 requests>=2.31
 pytest>=7.4
+opencv-python>=4.8.0
+torch>=2.0.0
 
 # PaddleOCR dependencies
 paddleocr[doc-parser]>=3.3
