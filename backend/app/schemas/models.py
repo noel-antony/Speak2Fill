@@ -10,23 +10,22 @@ class HealthResponse(BaseModel):
 
 
 class FormField(BaseModel):
-    label: str = Field(..., description="Best-effort field label, e.g., Name, DOB")
-    text: str = Field("", description="(Optional) extracted or user-filled value")
+    field_id: str = Field(..., description="Stable snake_case identifier for this field")
+    label: str = Field(..., description="Human-readable field label, e.g., Name, DOB")
     bbox: List[int] = Field(..., min_length=4, max_length=4, description="[x1,y1,x2,y2]")
     input_mode: str = Field("voice", description="voice or placeholder")
     write_language: str = Field("en", description="en, ml, or numeric")
 
 
 class OcrItem(BaseModel):
-    text: str
-    score: float
+    text: str = Field(..., description="Detected text content")
     bbox: List[int] = Field(..., min_length=4, max_length=4, description="[x1,y1,x2,y2]")
-    points: Optional[List[List[float]]] = Field(
-        default=None, description="Quadrilateral points: [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]"
-    )
+    score: float = Field(..., description="OCR confidence score (0.0-1.0)")
 
 
 class UploadFormResponse(BaseModel):
-    session_id: str
-    ocr_items: List[OcrItem]
-    fields: List[FormField]
+    session_id: str = Field(..., description="Unique session identifier")
+    image_width: int = Field(..., description="Original image width in pixels")
+    image_height: int = Field(..., description="Original image height in pixels")
+    ocr_items: List[OcrItem] = Field(..., description="Deduplicated OCR text boxes")
+    fields: List[FormField] = Field(..., description="Detected fillable form fields (ordered, immutable)")

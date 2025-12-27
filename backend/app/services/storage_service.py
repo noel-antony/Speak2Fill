@@ -36,6 +36,7 @@ def _init_db(conn: sqlite3.Connection) -> None:
             session_id TEXT PRIMARY KEY,
             created_at REAL NOT NULL,
             filename TEXT NOT NULL,
+            image_data BLOB,
             ocr_items_json TEXT NOT NULL,
             fields_json TEXT NOT NULL,
             current_field_index INTEGER NOT NULL DEFAULT 0,
@@ -46,6 +47,15 @@ def _init_db(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    
+    # Migration: Add image_data column if it doesn't exist (for existing databases)
+    try:
+        conn.execute("SELECT image_data FROM sessions LIMIT 1")
+    except sqlite3.OperationalError:
+        # Column doesn't exist, add it
+        conn.execute("ALTER TABLE sessions ADD COLUMN image_data BLOB")
+        conn.commit()
+    
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS messages (
@@ -88,17 +98,19 @@ class SQLiteSessionStore:
         fields: List[FormField],
         image_width: int = 0,
         image_height: int = 0,
+        image_data: Optional[bytes] = None,
     ) -> str:
         session_id = str(uuid4())
         created_at = time.time()
 
         def _op(conn: sqlite3.Connection) -> str:
             conn.execute(
-                "INSERT INTO sessions(session_id, created_at, filename, ocr_items_json, fields_json, current_field_index, filled_fields_json, language, image_width, image_height) VALUES (?, ?, ?, ?, ?, 0, '{}', 'en', ?, ?)",
+                "INSERT INTO sessions(session_id, created_at, filename, image_data, ocr_items_json, fields_json, current_field_index, filled_fields_json, language, image_width, image_height) VALUES (?, ?, ?, ?, ?, ?, 0, '{}', 'en', ?, ?)",
                 (
                     session_id,
                     created_at,
                     filename,
+                    image_data,
                     json.dumps(ocr_items, ensure_ascii=False),
                     json.dumps([f.model_dump() for f in fields], ensure_ascii=False),
                     image_width,
@@ -137,6 +149,48 @@ class SQLiteSessionStore:
                 "fields": json.loads(row["fields_json"]),
                 "image_width": image_width,
                 "image_height": image_height,
+            }
+
+        return self._with_db(_op)
+
+    def get_image(self, session_id: str) -> Optional[bytes]:
+        """Retrieve the original uploaded image by session_id."""
+
+        def _op(conn: sqlite3.Connection) -> Optional[bytes]:
+            row = conn.execute(
+                "SELECT image_data FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None or row["image_data"] is None:
+                return None
+            return bytes(row["image_data"])
+
+        return self._with_db(_op)
+
+    def get_full_response(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve the complete analyze-form response by session_id.
+        
+        Returns the same structure as UploadFormResponse:
+        - session_id
+        - image_width, image_height
+        - ocr_items (deduplicated)
+        - fields (with field_id, label, bbox, etc.)
+        """
+
+        def _op(conn: sqlite3.Connection) -> Optional[Dict[str, Any]]:
+            row = conn.execute(
+                "SELECT session_id, ocr_items_json, fields_json, image_width, image_height FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+
+            return {
+                "session_id": row["session_id"],
+                "image_width": int(row["image_width"]),
+                "image_height": int(row["image_height"]),
+                "ocr_items": json.loads(row["ocr_items_json"]),
+                "fields": json.loads(row["fields_json"]),
             }
 
         return self._with_db(_op)

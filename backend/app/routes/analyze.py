@@ -15,6 +15,27 @@ from app.services.storage_service import store
 router = APIRouter(tags=["forms"])
 
 
+@router.get("/session/{session_id}")
+def get_session(session_id: str):
+    """Retrieve the complete analyze-form response for a given session."""
+    response = store.get_full_response(session_id)
+    if response is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return response
+
+
+@router.get("/session/{session_id}/image")
+def get_session_image(session_id: str):
+    """Retrieve the original uploaded image for a given session."""
+    from fastapi.responses import Response
+    
+    image_data = store.get_image(session_id)
+    if image_data is None:
+        raise HTTPException(status_code=404, detail="Image not found for this session")
+    
+    return Response(content=image_data, media_type="image/jpeg")
+
+
 def _get_ocr_service_url() -> str:
     url = os.getenv("OCR_SERVICE_URL") or os.getenv("PADDLE_OCR_SERVICE_URL")
     if not url:
@@ -142,6 +163,41 @@ def _find_image_dims(payload: Any) -> Tuple[int, int]:
     return width, height
 
 
+def _deduplicate_ocr_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Remove duplicate OCR items based on text+bbox similarity.
+    
+    Strategy: Keep first occurrence of each unique (text, bbox) pair.
+    This reduces response bloat without losing coverage.
+    """
+    seen = set()
+    deduplicated = []
+    
+    for item in items:
+        text = item.get("text", "")
+        bbox = tuple(item.get("bbox", []))
+        key = (text, bbox)
+        
+        if key not in seen:
+            seen.add(key)
+            deduplicated.append(item)
+    
+    return deduplicated
+
+
+def _generate_field_id(label: str, index: int) -> str:
+    """Generate stable snake_case field_id from label and index.
+    
+    Examples:
+        - 'Name' -> 'name_0'
+        - 'Date of Birth' -> 'date_of_birth_1'
+        - 'Phone Number' -> 'phone_number_2'
+    """
+    import re
+    # Convert to lowercase and replace non-alphanumeric with underscore
+    normalized = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+    return f"{normalized}_{index}"
+
+
 def _call_remote_ocr(image_bytes: bytes, filename: Optional[str], content_type: Optional[str]):
     url = _get_ocr_service_url()
 
@@ -198,11 +254,16 @@ async def analyze_form(file: UploadFile = File(...)) -> UploadFormResponse:
     image_width = reported_width or local_width
     image_height = reported_height or local_height
 
+    # Deduplicate OCR items to reduce response bloat
+    ocr_items = _deduplicate_ocr_items(ocr_items)
+
+    # Filter low-confidence OCR items
     MIN_CONFIDENCE = 0.5
     filtered_items = [item for item in ocr_items if item.get("score", 0) >= MIN_CONFIDENCE]
     if not filtered_items:
         raise HTTPException(status_code=400, detail="No high-confidence OCR text found")
 
+    # Call Gemini to identify fillable fields
     try:
         gemini = get_gemini_service()
         fields = gemini.analyze_form_fields(filtered_items, image_width, image_height)
@@ -212,21 +273,38 @@ async def analyze_form(file: UploadFile = File(...)) -> UploadFormResponse:
     if not fields:
         raise HTTPException(status_code=400, detail="Gemini could not identify any fillable fields")
 
-    try:
-        validated_fields = [FormField(**field) for field in fields]
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail="Invalid field structure returned from Gemini") from exc
+    # Add stable field_id to each field and validate structure
+    validated_fields = []
+    for idx, field in enumerate(fields):
+        try:
+            # Generate stable field_id
+            field_id = _generate_field_id(field.get("label", "field"), idx)
+            field["field_id"] = field_id
+            
+            # Remove text field (runtime state, not analysis-time data)
+            field.pop("text", None)
+            
+            validated_fields.append(FormField(**field))
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500, detail=f"Invalid field structure from Gemini: {str(exc)}"
+            ) from exc
 
+    # Create session with immutable analysis-time data
     session_id = store.create_session(
         filename=file.filename or "uploaded_image",
         ocr_items=ocr_items,
         fields=validated_fields,
         image_width=image_width,
         image_height=image_height,
+        image_data=image_bytes,  # Store original image
     )
 
+    # Return clean, minimal response
     return UploadFormResponse(
         session_id=session_id,
-        ocr_items=[OcrItem(**item) for item in ocr_items],
+        image_width=image_width,
+        image_height=image_height,
+        ocr_items=[OcrItem(text=item["text"], bbox=item["bbox"], score=item["score"]) for item in ocr_items],
         fields=validated_fields,
     )
