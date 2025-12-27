@@ -1,9 +1,16 @@
+# Core dependencies
 fastapi>=0.110
 uvicorn[standard]>=0.24
 python-multipart>=0.0.9
 pillow>=10.0
-paddleocr[doc-parser]>=3.3
-paddlex[ocr]>=3.3
-paddlepaddle>=3.2
 requests>=2.31
 pytest>=7.4
+
+# PaddleOCR dependencies
+paddleocr[doc-parser]>=3.3
+paddlex[ocr]>=3.3
+
+# For GPU support, install paddlepaddle-gpu:
+# pip install paddlepaddle-gpu -f https://www.paddlepaddle.org.cn/whl/linux/gpu/develop.html
+# For CPU only:
+# pip install paddlepaddle>=3.2

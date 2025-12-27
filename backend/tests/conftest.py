@@ -58,4 +58,5 @@ def mock_ocr(monkeypatch):
     from app.services.ocr_service import ocr_service
 
     monkeypatch.setattr(ocr_service, "run_ocr", _fake_run_ocr)
+    monkeypatch.setattr(ocr_service, "is_ready", lambda: True)
     return True

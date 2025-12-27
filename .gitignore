@@ -63,3 +63,8 @@ build/
 
 # ---------- Node (if added later) ----------
 node_modules/
+
+# ---------- Data / Test artifacts ----------
+backend/data/
+random/
+*.db
