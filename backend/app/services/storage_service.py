@@ -195,5 +195,71 @@ class SQLiteSessionStore:
 
         return self._with_db(_op)
 
+    def get_field_value(self, session_id: str, field_id: str) -> Optional[str]:
+        """Get the stored value for a specific field."""
+
+        def _op(conn: sqlite3.Connection) -> Optional[str]:
+            row = conn.execute(
+                "SELECT filled_fields_json FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            try:
+                filled_fields = json.loads(row["filled_fields_json"])
+                return filled_fields.get(field_id)
+            except Exception:
+                return None
+
+        return self._with_db(_op)
+
+    def set_field_value(self, session_id: str, field_id: str, value: str) -> None:
+        """Store the value for a specific field."""
+
+        def _op(conn: sqlite3.Connection) -> None:
+            row = conn.execute(
+                "SELECT filled_fields_json FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return
+            
+            filled_fields = json.loads(row["filled_fields_json"])
+            filled_fields[field_id] = value
+            
+            conn.execute(
+                "UPDATE sessions SET filled_fields_json = ? WHERE session_id = ?",
+                (json.dumps(filled_fields, ensure_ascii=False), session_id),
+            )
+            conn.commit()
+
+        self._with_db(_op)
+
+    def get_current_field_index(self, session_id: str) -> Optional[int]:
+        """Get the current field index for a session."""
+
+        def _op(conn: sqlite3.Connection) -> Optional[int]:
+            row = conn.execute(
+                "SELECT current_field_index FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return int(row["current_field_index"])
+
+        return self._with_db(_op)
+
+    def advance_field_index(self, session_id: str) -> None:
+        """Move to the next field."""
+
+        def _op(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE sessions SET current_field_index = current_field_index + 1 WHERE session_id = ?",
+                (session_id,),
+            )
+            conn.commit()
+
+        self._with_db(_op)
+
 
 store = SQLiteSessionStore(_lock=threading.Lock())

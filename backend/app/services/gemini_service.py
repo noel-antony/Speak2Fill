@@ -121,25 +121,44 @@ JSON output:"""
             print(f"Gemini API error: {e}")
             return []
 
-    def generate_assistant_message(
-        self, field_label: str, language: str = "en", is_confirmation: bool = False
+    def generate_assistant_text(
+        self,
+        phase: str,
+        field_label: str,
+        input_mode: str,
+        write_language: str,
+        value: str = "",
     ) -> str:
+        """Generate contextual assistant instruction for chat flow.
+        
+        Args:
+            phase: "collect_value" | "writing_guide" | "completion"
+            field_label: Human-readable field name
+            input_mode: "voice" | "placeholder"
+            write_language: "en" | "ml" | "numeric"
+            value: Collected value (for writing_guide phase)
+        
+        Returns:
+            Assistant text in appropriate language
         """
-        Generate assistant instruction for current field.
-        Simple deterministic generation - can use Gemini for multilingual support.
-        """
-        if is_confirmation:
-            prompts = {
-                "en": f"Great! Now moving to the next field.",
-                "ml": f"നല്ലത്! അടുത്ത ഫീൽഡിലേക്ക് പോകുന്നു.",
-            }
-        else:
-            prompts = {
-                "en": f"Please fill in the '{field_label}' field. Say 'done' when you finish writing.",
-                "ml": f"'{field_label}' ഫീൽഡ് പൂരിപ്പിക്കുക. എഴുതി കഴിഞ്ഞാൽ 'ചെയ്തു' എന്ന് പറയുക.",
-            }
-
-        return prompts.get(language, prompts["en"])
+        # Deterministic templates based on phase
+        if phase == "completion":
+            return "Great! All fields are completed. Your form is ready."
+        
+        if phase == "collect_value":
+            if input_mode == "voice":
+                return f"Please tell me the value for '{field_label}'."
+            else:
+                # Placeholder fields skip collection
+                return f"Moving to '{field_label}'."
+        
+        if phase == "writing_guide":
+            if value:
+                return f"Please write '{value}' in the '{field_label}' field. Say 'done' when finished."
+            else:
+                return f"Please fill the '{field_label}' field. Say 'done' when finished."
+        
+        return "Please continue."
 
 
 # Singleton instance
