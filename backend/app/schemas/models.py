@@ -30,29 +30,3 @@ class UploadFormResponse(BaseModel):
     session_id: str
     ocr_items: List[OcrItem]
     fields: List[FormField]
-
-
-class ChatRequest(BaseModel):
-    session_id: str
-    user_message: str
-
-
-class AnalyzeFormRequest(BaseModel):
-    session_id: str
-
-
-class AnalyzeFormResponse(BaseModel):
-    session_id: str
-    fields_count: int
-    message: str
-
-
-class WhiteboardAction(BaseModel):
-    type: Literal["DRAW_GUIDE"]
-    text: str
-    bbox: List[int] = Field(..., min_length=4, max_length=4)
-
-
-class ChatResponse(BaseModel):
-    reply_text: str
-    action: Optional[WhiteboardAction] = None

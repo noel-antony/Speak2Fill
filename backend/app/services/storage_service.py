@@ -66,7 +66,7 @@ def _init_db(conn: sqlite3.Connection) -> None:
 class SQLiteSessionStore:
     """Small, hackathon-friendly SQLite session store.
 
-    Stores OCR + inferred fields from /upload-form and retrieves them by session_id in /chat.
+    Stores OCR + inferred fields from /analyze-form.
     """
 
     _lock: threading.Lock
@@ -113,22 +113,11 @@ class SQLiteSessionStore:
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         def _op(conn: sqlite3.Connection) -> Optional[Dict[str, Any]]:
             row = conn.execute(
-                "SELECT session_id, created_at, filename, ocr_items_json, fields_json, current_field_index, filled_fields_json, language, image_width, image_height FROM sessions WHERE session_id = ?",
+                "SELECT session_id, created_at, filename, ocr_items_json, fields_json, image_width, image_height FROM sessions WHERE session_id = ?",
                 (session_id,),
             ).fetchone()
             if row is None:
                 return None
-            
-            # Handle potential missing columns for backward compatibility
-            try:
-                filled_fields_json = row["filled_fields_json"]
-            except (KeyError, IndexError):
-                filled_fields_json = "{}"
-            
-            try:
-                language = row["language"]
-            except (KeyError, IndexError):
-                language = "en"
             
             try:
                 image_width = int(row["image_width"])
@@ -146,84 +135,11 @@ class SQLiteSessionStore:
                 "filename": row["filename"],
                 "ocr_items": json.loads(row["ocr_items_json"]),
                 "fields": json.loads(row["fields_json"]),
-                "current_field_index": int(row["current_field_index"]),
-                "filled_fields": json.loads(filled_fields_json),
-                "language": language,
                 "image_width": image_width,
                 "image_height": image_height,
             }
 
         return self._with_db(_op)
-
-    def append_message(self, session_id: str, role: str, content: str) -> None:
-        def _op(conn: sqlite3.Connection) -> None:
-            conn.execute(
-                "INSERT INTO messages(session_id, ts, role, content) VALUES (?, ?, ?, ?)",
-                (session_id, time.time(), role, content),
-            )
-            conn.commit()
-
-        self._with_db(_op)
-
-    def get_next_field(self, session_id: str) -> Optional[Dict[str, Any]]:
-        def _op(conn: sqlite3.Connection) -> Optional[Dict[str, Any]]:
-            row = conn.execute(
-                "SELECT fields_json, current_field_index FROM sessions WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-            if row is None:
-                return None
-            fields = json.loads(row["fields_json"])
-            if not fields:
-                return None
-            idx = int(row["current_field_index"])
-            if idx >= len(fields):
-                return None
-            return fields[idx]
-
-        return self._with_db(_op)
-
-    def advance_field(self, session_id: str) -> None:
-        def _op(conn: sqlite3.Connection) -> None:
-            conn.execute(
-                "UPDATE sessions SET current_field_index = current_field_index + 1 WHERE session_id = ?",
-                (session_id,),
-            )
-            conn.commit()
-
-        self._with_db(_op)
-
-    def update_filled_field(self, session_id: str, field_label: str, value: str) -> None:
-        """Update a specific field value in the filled_fields map."""
-
-        def _op(conn: sqlite3.Connection) -> None:
-            row = conn.execute(
-                "SELECT filled_fields_json FROM sessions WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-            if row is None:
-                return
-            filled_fields = json.loads(row["filled_fields_json"])
-            filled_fields[field_label] = value
-            conn.execute(
-                "UPDATE sessions SET filled_fields_json = ? WHERE session_id = ?",
-                (json.dumps(filled_fields, ensure_ascii=False), session_id),
-            )
-            conn.commit()
-
-        self._with_db(_op)
-
-    def update_fields(self, session_id: str, fields: List[Dict[str, Any]]) -> None:
-        """Replace the entire fields list for a session (used by /analyze-form)."""
-
-        def _op(conn: sqlite3.Connection) -> None:
-            conn.execute(
-                "UPDATE sessions SET fields_json = ?, current_field_index = 0 WHERE session_id = ?",
-                (json.dumps(fields, ensure_ascii=False), session_id),
-            )
-            conn.commit()
-
-        self._with_db(_op)
 
 
 store = SQLiteSessionStore(_lock=threading.Lock())

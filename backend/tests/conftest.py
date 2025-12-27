@@ -1,9 +1,14 @@
 import io
-from typing import List
+import sys
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
 
 @pytest.fixture()
@@ -30,33 +35,76 @@ def sample_image_bytes() -> bytes:
     return buf.getvalue()
 
 
-class _FakeOcrResult:
-    def __init__(self, items: List[dict], fields: list):
-        self.items = items
-        self.fields = fields
+@pytest.fixture(autouse=True)
+def ocr_service_url(monkeypatch):
+    """Provide a placeholder OCR endpoint for tests."""
+
+    monkeypatch.setenv("OCR_SERVICE_URL", "http://ocr.test.local")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    return True
+
+
+@pytest.fixture(autouse=True)
+def mock_gemini(monkeypatch):
+    """Stub Gemini field analysis to avoid network calls during tests."""
+
+    from app.services import gemini_service
+
+    def _fake_analyze(self, ocr_items, image_width, image_height):
+        _ = image_width, image_height
+        if not ocr_items:
+            return []
+        first_bbox = ocr_items[0].get("bbox", [0, 0, 0, 0])
+        return [
+            {
+                "label": "Name",
+                "bbox": first_bbox,
+                "input_mode": "voice",
+                "write_language": "en",
+                "text": "",
+            }
+        ]
+
+    monkeypatch.setattr(gemini_service.GeminiService, "analyze_form_fields", _fake_analyze)
+    return True
 
 
 @pytest.fixture()
-def mock_ocr(monkeypatch):
-    """Mock PaddleOCR execution so tests are fast and deterministic."""
+def mock_remote_ocr(monkeypatch):
+    """Mock remote OCR HTTP call so tests stay fast and offline."""
 
-    from app.schemas.models import FormField
+    from app.routes import analyze as analyze_module
 
-    def _fake_run_ocr(*, image_bytes: bytes):
-        # Minimal fake OCR output that still matches our schema expectations.
-        items = [
+    class _FakeResponse:
+        def __init__(self, payload: dict):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def _fake_post(url, **kwargs):
+        _ = url, kwargs
+        # Simulate nested PaddleOCR-VL style payload
+        payload = [
             {
-                "text": "Name",
-                "score": 0.99,
-                "bbox": [10, 10, 80, 30],
-                "points": [[10, 10], [80, 10], [80, 30], [10, 30]],
+                "res": {
+                    "width": 300,
+                    "height": 120,
+                    "parsing_res_list": [
+                        {
+                            "block_label": "text",
+                            "block_content": "Name",
+                            "block_bbox": [10, 10, 80, 30],
+                            "score": 0.99,
+                        }
+                    ],
+                }
             }
         ]
-        fields = [FormField(label="Name", text="", bbox=[90, 8, 300, 34])]
-        return _FakeOcrResult(items=items, fields=fields)
+        return _FakeResponse(payload)
 
-    from app.services.ocr_service import ocr_service
-
-    monkeypatch.setattr(ocr_service, "run_ocr", _fake_run_ocr)
-    monkeypatch.setattr(ocr_service, "is_ready", lambda: True)
+    monkeypatch.setattr(analyze_module.requests, "post", _fake_post)
     return True

@@ -4,15 +4,14 @@ sdk: docker
 app_port: 7860
 ---
 
-# Speak2Fill Backend (FastAPI + PaddleOCR-VL)
+# Speak2Fill Backend (FastAPI)
 
 FastAPI backend that:
 - Accepts a scanned form image
-- Runs PaddleOCR-VL (`PaddleOCRVL`)
-- Extracts text + bounding boxes
-- Infers likely form fields via simple heuristics
+- Calls a remote PaddleOCR-VL service for OCR (configurable via `OCR_SERVICE_URL`)
+- Sends OCR results to Gemini to identify fillable fields
 - Creates a session per upload (stored in SQLite)
-- Provides a mocked chat endpoint to guide form filling
+- Provides a chat endpoint to guide form filling
 
 ## Requirements
 - Python 3.10+
@@ -40,7 +39,7 @@ Returns:
 { "status": "ok" }
 ```
 
-### POST /upload-form
+### POST /analyze-form
 Multipart form-data:
 - `file`: image
 
@@ -48,9 +47,8 @@ Returns:
 ```json
 {
   "session_id": "...",
-  "fields": [
-    { "label": "Name", "text": "", "bbox": [0,0,0,0] }
-  ]
+  "ocr_items": [{ "text": "Name", "bbox": [0,0,0,0], "score": 0.99 }],
+  "fields": [{ "label": "Name", "text": "", "bbox": [0,0,0,0] }]
 }
 ```
 
@@ -86,11 +84,11 @@ Upload an image (this repo has sample images in `random/`):
 
 ```bash
 # If you're running this from the repo root (Speak2Fill/):
-curl -sS -X POST "$BASE_URL/upload-form" \
+curl -sS -X POST "$BASE_URL/analyze-form" \
   -F "file=@./random/form1.jpg" | cat
 
 # If you're running this from backend/:
-# curl -sS -X POST "$BASE_URL/upload-form" \
+# curl -sS -X POST "$BASE_URL/analyze-form" \
 #   -F "file=@../random/form1.jpg" | cat
 ```
 
@@ -113,13 +111,13 @@ curl -sS -X POST "$BASE_URL/chat" \
 
 This backend uses a small SQLite database to store:
 
-- `session_id` created by `POST /upload-form`
+- `session_id` created by `POST /analyze-form`
 - OCR output (`ocr_items`) and inferred `fields`
 - Chat messages and the current field index
 
 How `/chat` retrieves OCR:
 
-- `/upload-form` saves OCR + fields into SQLite under a new `session_id`.
+- `/analyze-form` saves OCR + fields into SQLite under a new `session_id`.
 - `/chat` receives `session_id`, loads the stored fields from SQLite, and decides which field to guide next.
 
 Configuration:
@@ -130,21 +128,13 @@ Hugging Face Spaces note: the filesystem may be ephemeral unless you enable pers
 
 ## OCR Configuration
 
-This backend uses **only** PaddleOCR-VL (`PaddleOCRVL`) for OCR extraction.
+This backend calls a remote PaddleOCR-VL service.
 
 Environment variables:
 
-- `OCR_DEVICE`
-  - `auto` (default): uses `gpu:0` if PaddlePaddle has CUDA, else `cpu`
-  - `cpu`
-  - `gpu` or `gpu:0`
+- `OCR_SERVICE_URL` (or `PADDLE_OCR_SERVICE_URL`): base URL of the OCR service. Required.
 
-Dependency note: PaddleOCR-VL requires extra dependencies. This repo pins them in `requirements.txt` via:
-
-- `paddleocr[doc-parser]`
-- `paddlex[ocr]`
-
-GPU note: if `paddle.is_compiled_with_cuda()` is `False`, you have a CPU-only PaddlePaddle build and GPU inference will not work until you install a CUDA-enabled PaddlePaddle build.
+The backend never exposes this URL in responses or logs; configure it through environment variables.
 
 ## Deploy to Hugging Face Spaces (Docker)
 
