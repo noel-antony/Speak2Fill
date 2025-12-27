@@ -1,9 +1,14 @@
 import 'package:flutter/material.dart';
+import '../mocks/mock_data.dart';
 import 'whiteboard_screen.dart';
 
 /// ChatScreen - Conversational interface with the AI assistant
-/// The assistant asks questions and guides the user on what to write.
-/// When a DRAW_GUIDE action is received, navigates to WhiteboardScreen.
+///
+/// Drives the form filling process:
+/// 1. Asks question for current field
+/// 2. Accepts user voice/text input
+/// 3. Shows "Draw" action (navigates to Whiteboard)
+/// 4. Advances to next field
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
 
@@ -15,73 +20,20 @@ class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _messageController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
-  // Chat messages: each message has 'role' (user/assistant) and 'content'
-  final List<Map<String, String>> _messages = [];
+  // Chat messages history
+  final List<Map<String, dynamic>> _messages = [];
 
-  // Track if we've shown the initial greeting
-  bool _hasShownGreeting = false;
-
-  // Mock field index to simulate multiple form fields
+  // Current state
   int _currentFieldIndex = 0;
-
-  // Mock image dimensions (simulating OCR response)
-  // In real app, these come from the backend with OCR results
-  static const double _mockImageWidth = 1200.0;
-  static const double _mockImageHeight = 1600.0;
-
-  // Mock form fields with realistic OCR-style bounding boxes
-  // bbox format: [x1, y1, x2, y2] in image coordinates
-  final List<Map<String, dynamic>> _mockFields = [
-    {
-      'label': 'Name',
-      'question': 'I will help you fill this form. What is your name?',
-      'response': 'Please write your name in the highlighted box.',
-      'action': {
-        'type': 'DRAW_GUIDE',
-        'text': 'RAVI KUMAR',
-        'bbox': [280.0, 200.0, 900.0, 280.0],
-      },
-    },
-    {
-      'label': 'Date of Birth',
-      'question': 'Great! Now, what is your date of birth?',
-      'response': 'Please write your date of birth in the highlighted box.',
-      'action': {
-        'type': 'DRAW_GUIDE',
-        'text': '15/08/1990',
-        'bbox': [280.0, 350.0, 650.0, 430.0],
-      },
-    },
-    {
-      'label': 'Phone Number',
-      'question': 'What is your phone number?',
-      'response': 'Please write your phone number in the highlighted box.',
-      'action': {
-        'type': 'DRAW_GUIDE',
-        'text': '9876543210',
-        'bbox': [280.0, 500.0, 700.0, 580.0],
-      },
-    },
-    {
-      'label': 'Address',
-      'question': 'What is your address?',
-      'response': 'Please write your address in the highlighted box.',
-      'action': {
-        'type': 'DRAW_GUIDE',
-        'text': '123 MAIN STREET, MUMBAI',
-        'bbox': [280.0, 650.0, 1000.0, 730.0],
-      },
-    },
-  ];
+  bool _isTyping = false;
+  bool _hasStarted = false;
 
   @override
   void initState() {
     super.initState();
-    // Show initial greeting after a brief delay
-    Future.delayed(const Duration(milliseconds: 300), () {
-      if (mounted && !_hasShownGreeting) {
-        _showAssistantGreeting();
-      }
+    // Start the flow after a brief delay
+    Future.delayed(const Duration(milliseconds: 500), () {
+      if (mounted) _startFormFlow();
     });
   }
 
@@ -92,146 +44,115 @@ class _ChatScreenState extends State<ChatScreen> {
     super.dispose();
   }
 
-  /// Show the initial assistant greeting
-  void _showAssistantGreeting() {
+  void _startFormFlow() {
     setState(() {
-      _hasShownGreeting = true;
-      if (_currentFieldIndex < _mockFields.length) {
-        _messages.add({
-          'role': 'assistant',
-          'content': _mockFields[_currentFieldIndex]['question'],
-        });
-      }
-    });
-    _scrollToBottom();
-  }
-
-  /// Handle sending a message
-  void _sendMessage() {
-    final text = _messageController.text.trim();
-    if (text.isEmpty) return;
-
-    setState(() {
-      // Add user message
-      _messages.add({
-        'role': 'user',
-        'content': text,
-      });
-    });
-
-    _messageController.clear();
-    _scrollToBottom();
-
-    // Simulate assistant response after a short delay
-    Future.delayed(const Duration(milliseconds: 500), () {
-      if (!mounted) return;
-      _handleAssistantResponse(text);
+      _hasStarted = true;
+      _askCurrentQuestion();
     });
   }
 
-  /// Generate mock assistant response
-  void _handleAssistantResponse(String userMessage) {
-    if (_currentFieldIndex >= _mockFields.length) {
-      // All fields completed
-      setState(() {
-        _messages.add({
-          'role': 'assistant',
-          'content':
-              'Congratulations! You have completed filling the form. Well done!',
-        });
-      });
-      _scrollToBottom();
+  void _askCurrentQuestion() {
+    if (_currentFieldIndex >= MockData.formFields.length) {
+      _addAssistantMessage(
+        'All done! You have successfully filled the form. Great job!',
+      );
       return;
     }
 
-    final currentField = _mockFields[_currentFieldIndex];
-    final action = currentField['action'] as Map<String, dynamic>;
+    final field = MockData.formFields[_currentFieldIndex];
+    _addAssistantMessage(field['question']);
+  }
 
-    // Update the action text with what user typed
-    action['text'] = userMessage.toUpperCase();
-
+  void _addAssistantMessage(String content) {
     setState(() {
       _messages.add({
         'role': 'assistant',
-        'content': currentField['response'],
+        'content': content,
+        'timestamp': DateTime.now(),
       });
     });
-
     _scrollToBottom();
-
-    // Navigate to whiteboard if action is DRAW_GUIDE
-    if (action['type'] == 'DRAW_GUIDE') {
-      Future.delayed(const Duration(milliseconds: 300), () {
-        if (!mounted) return;
-        _navigateToWhiteboard(
-          textToWrite: action['text'],
-          bbox: List<double>.from(action['bbox']),
-          fieldLabel: currentField['label'] ?? 'Field',
-        );
-      });
-    }
   }
 
-  /// Navigate to WhiteboardScreen with OCR-style parameters
-  void _navigateToWhiteboard({
-    required String textToWrite,
-    required List<double> bbox,
-    required String fieldLabel,
-  }) async {
+  void _addUserMessage(String content) {
+    setState(() {
+      _messages.add({
+        'role': 'user',
+        'content': content,
+        'timestamp': DateTime.now(),
+      });
+    });
+    _scrollToBottom();
+  }
+
+  void _handleUserResponse(String text) async {
+    _addUserMessage(text);
+    _messageController.clear();
+
+    if (_currentFieldIndex >= MockData.formFields.length) return;
+
+    // Simulate thinking
+    setState(() => _isTyping = true);
+    await Future.delayed(const Duration(milliseconds: 800));
+    if (!mounted) return;
+    setState(() => _isTyping = false);
+
+    final field = MockData.formFields[_currentFieldIndex];
+    
+    String valueToWrite = text.toUpperCase();
+    if (valueToWrite.length < 2) {
+       // Demo fallback
+       valueToWrite = (field['example'] as String).toUpperCase();
+    }
+
+    _addAssistantMessage(field['response']);
+    
+    setState(() {
+      _messages.add({
+        'role': 'system_action',
+        'content': 'Tap to write on form',
+        'action_label': 'OPEN WRITING GUIDE',
+        'field_data': field,
+        'value_to_write': valueToWrite,
+      });
+    });
+    _scrollToBottom();
+  }
+
+  Future<void> _openWhiteboard(Map<String, dynamic> field, String valueToWrite) async {
     await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => WhiteboardScreen(
-          textToWrite: textToWrite,
-          boundingBox: bbox,
-          imageWidth: _mockImageWidth,
-          imageHeight: _mockImageHeight,
-          fieldLabel: fieldLabel,
+          textToWrite: valueToWrite,
+          boundingBox: List<double>.from(field['bbox']),
+          imageWidth: MockData.imageWidth,
+          imageHeight: MockData.imageHeight,
+          fieldLabel: field['label'],
         ),
       ),
     );
 
-    // After returning from whiteboard, move to next field
+    // When they return, we assume they wrote it.
+    // Advance to next field
     if (!mounted) return;
+    
     setState(() {
       _currentFieldIndex++;
     });
-
-    // Ask next question if there are more fields
-    if (_currentFieldIndex < _mockFields.length) {
-      Future.delayed(const Duration(milliseconds: 300), () {
-        if (!mounted) return;
-        setState(() {
-          _messages.add({
-            'role': 'assistant',
-            'content': _mockFields[_currentFieldIndex]['question'],
-          });
-        });
-        _scrollToBottom();
-      });
-    } else {
-      // All fields done
-      Future.delayed(const Duration(milliseconds: 300), () {
-        if (!mounted) return;
-        setState(() {
-          _messages.add({
-            'role': 'assistant',
-            'content':
-                'Congratulations! You have completed filling all the fields. Well done!',
-          });
-        });
-        _scrollToBottom();
-      });
-    }
+    
+    // Ask next question
+    await Future.delayed(const Duration(milliseconds: 600));
+    if (!mounted) return;
+    _askCurrentQuestion();
   }
 
-  /// Scroll chat to bottom
   void _scrollToBottom() {
-    Future.delayed(const Duration(milliseconds: 100), () {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
           _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 200),
+          duration: const Duration(milliseconds: 300),
           curve: Curves.easeOut,
         );
       }
@@ -241,123 +162,284 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      // backgroundColor: const Color(0xFFF1F4F9), // Removed to use theme default
       appBar: AppBar(
         title: const Text('Form Assistant'),
         centerTitle: true,
+        backgroundColor: Theme.of(context).appBarTheme.backgroundColor,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_ios_new, size: 20),
+          onPressed: () => Navigator.pop(context),
+        ),
       ),
       body: Column(
         children: [
-          // Chat messages list
           Expanded(
             child: ListView.builder(
               controller: _scrollController,
-              padding: const EdgeInsets.all(16),
-              itemCount: _messages.length,
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+              itemCount: _messages.length + (_isTyping ? 1 : 0),
               itemBuilder: (context, index) {
-                final message = _messages[index];
-                final isUser = message['role'] == 'user';
+                if (index == _messages.length) {
+                  return const _TypingIndicator();
+                }
+
+                final msg = _messages[index];
+                if (msg['role'] == 'system_action') {
+                  return _ActionBubble(
+                    label: msg['action_label'],
+                    onPressed: () => _openWhiteboard(
+                      msg['field_data'], 
+                      msg['value_to_write']
+                    ),
+                  );
+                }
+
                 return _ChatBubble(
-                  message: message['content'] ?? '',
-                  isUser: isUser,
+                  message: msg['content'],
+                  isUser: msg['role'] == 'user',
                 );
               },
             ),
           ),
-          // Input area
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.surface,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.05),
-                  blurRadius: 10,
-                  offset: const Offset(0, -2),
-                ),
-              ],
-            ),
-            child: SafeArea(
-              child: Row(
-                children: [
-                  // Text input
-                  Expanded(
-                    child: TextField(
-                      controller: _messageController,
-                      decoration: InputDecoration(
-                        hintText: 'Type your answer...',
-                        filled: true,
-                        fillColor: Theme.of(context)
-                            .colorScheme
-                            .surfaceContainerHighest,
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(24),
-                          borderSide: BorderSide.none,
-                        ),
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 12,
-                        ),
-                      ),
-                      textInputAction: TextInputAction.send,
-                      onSubmitted: (_) => _sendMessage(),
-                    ),
+          _buildInputArea(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInputArea() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+      decoration: BoxDecoration(
+        color: Theme.of(context).cardColor,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 20,
+            offset: const Offset(0, -5),
+          ),
+        ],
+      ),
+      child: SafeArea(
+        child: Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _messageController,
+                textInputAction: TextInputAction.send,
+                decoration: InputDecoration(
+                  hintText: 'Type your answer...',
+                  filled: true,
+                  fillColor: Theme.of(context).inputDecorationTheme.fillColor,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(24),
+                    borderSide: BorderSide.none,
                   ),
-                  const SizedBox(width: 8),
-                  // Send button
-                  IconButton.filled(
-                    onPressed: _sendMessage,
-                    icon: const Icon(Icons.send),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 24, 
+                    vertical: 16
+                  ),
+                ),
+                onSubmitted: (val) {
+                  if (val.trim().isNotEmpty) _handleUserResponse(val.trim());
+                },
+              ),
+            ),
+            const SizedBox(width: 12),
+            Container(
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.primary,
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: Theme.of(context).colorScheme.primary.withOpacity(0.4),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
                   ),
                 ],
               ),
+              child: IconButton(
+                onPressed: () {
+                  final val = _messageController.text.trim();
+                  if (val.isNotEmpty) _handleUserResponse(val);
+                },
+                icon: const Icon(Icons.send_rounded, color: Colors.white),
+                iconSize: 24,
+                padding: const EdgeInsets.all(12),
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
 }
 
-/// Chat bubble widget for displaying messages
 class _ChatBubble extends StatelessWidget {
   final String message;
   final bool isUser;
 
-  const _ChatBubble({
-    required this.message,
-    required this.isUser,
-  });
+  const _ChatBubble({required this.message, required this.isUser});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isAssistant = !isUser;
+
+    return Align(
+      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 20),
+        child: Row(
+          mainAxisAlignment: isUser ? MainAxisAlignment.end : MainAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            if (isAssistant) ...[
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: theme.cardColor,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: theme.dividerColor.withOpacity(0.1)),
+                ),
+                child: Icon(Icons.smart_toy_outlined, size: 20, color: theme.colorScheme.primary),
+              ),
+              const SizedBox(width: 8),
+            ],
+            
+            Flexible(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                decoration: BoxDecoration(
+                  color: isUser 
+                      ? theme.colorScheme.primary 
+                      : theme.cardColor,
+                  borderRadius: BorderRadius.only(
+                    topLeft: const Radius.circular(24),
+                    topRight: const Radius.circular(24),
+                    bottomLeft: Radius.circular(isUser ? 24 : 4),
+                    bottomRight: Radius.circular(isUser ? 4 : 24),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.05),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Text(
+                  message,
+                  style: TextStyle(
+                    color: isUser ? Colors.white : theme.colorScheme.onSurface,
+                    fontSize: 16,
+                    height: 1.5,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ActionBubble extends StatelessWidget {
+  final String label;
+  final VoidCallback onPressed;
+
+  const _ActionBubble({required this.label, required this.onPressed});
 
   @override
   Widget build(BuildContext context) {
     return Align(
-      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+      alignment: Alignment.centerLeft,
+      child: Padding(
+        padding: const EdgeInsets.only(left: 44, bottom: 20),
+        child: GestureDetector(
+          onTap: onPressed,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  Theme.of(context).colorScheme.secondary,
+                  const Color(0xFF26A69A), // slightly darker teal
+                ],
+              ),
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [
+                BoxShadow(
+                  color: Theme.of(context).colorScheme.secondary.withOpacity(0.4),
+                  blurRadius: 12,
+                  offset: const Offset(0, 6),
+                ),
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.edit_note_rounded, color: Colors.white),
+                const SizedBox(width: 12),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                const Icon(Icons.arrow_forward, color: Colors.white, size: 18),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TypingIndicator extends StatelessWidget {
+  const _TypingIndicator();
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
       child: Container(
-        margin: const EdgeInsets.only(bottom: 12),
+        margin: const EdgeInsets.only(bottom: 20, left: 44),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.75,
-        ),
         decoration: BoxDecoration(
-          color: isUser
-              ? Theme.of(context).colorScheme.primary
-              : Theme.of(context).colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(16),
-            topRight: const Radius.circular(16),
-            bottomLeft: Radius.circular(isUser ? 16 : 4),
-            bottomRight: Radius.circular(isUser ? 4 : 16),
-          ),
+          color: Colors.grey.shade100,
+          borderRadius: BorderRadius.circular(20),
         ),
-        child: Text(
-          message,
-          style: TextStyle(
-            color: isUser
-                ? Theme.of(context).colorScheme.onPrimary
-                : Theme.of(context).colorScheme.onSurface,
-            fontSize: 16,
-          ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _dot(),
+            const SizedBox(width: 4),
+            _dot(),
+            const SizedBox(width: 4),
+            _dot(),
+          ],
         ),
+      ),
+    );
+  }
+
+  Widget _dot() {
+    return Container(
+      width: 6,
+      height: 6,
+      decoration: BoxDecoration(
+        color: Colors.grey.shade400,
+        shape: BoxShape.circle,
       ),
     );
   }
