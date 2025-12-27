@@ -1,18 +1,18 @@
 from __future__ import annotations
 
+import json
+import os
 import re
+import tempfile
 import threading
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
 from io import BytesIO
-import os
-import tempfile
-
-from PIL import Image
-
-from paddleocr import PaddleOCRVL
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 import paddle
+from PIL import Image
+from paddleocr import PaddleOCRVL
 
 from app.schemas.models import FormField
 
@@ -54,6 +54,77 @@ def _expand_bbox_right(bbox: List[int], factor: float = 3.0, min_width: int = 16
     width = max(x2 - x1, 1)
     target_width = max(int(width * factor), min_width)
     return [x2 + 8, y1 - 2, x2 + 8 + target_width, y2 + 2]
+
+
+def _extract_ocr_items_from_json(obj: Any, *, max_nodes: int = 50_000) -> List[Dict[str, Any]]:
+    """Best-effort extractor for PaddleOCR-VL saved JSON outputs.
+
+    We don't rely on a single fixed schema because PaddleOCR-VL output JSON can evolve
+    and differs across pipeline configs. Instead, we walk the JSON tree and collect
+    any dict nodes that look like text boxes.
+    """
+
+    def _bbox_from_any(v: Any) -> tuple[Optional[List[int]], Optional[List[List[float]]]]:
+        if isinstance(v, (list, tuple)) and len(v) == 4:
+            if v and isinstance(v[0], (list, tuple)):
+                try:
+                    pts = [[float(p[0]), float(p[1])] for p in v]
+                    return _bbox_points_to_xyxy(pts), pts
+                except Exception:
+                    return None, None
+            try:
+                return [int(v[0]), int(v[1]), int(v[2]), int(v[3])], None
+            except Exception:
+                return None, None
+        return None, None
+
+    items: List[Dict[str, Any]] = []
+    stack: List[Any] = [obj]
+    seen = 0
+
+    while stack:
+        cur = stack.pop()
+        seen += 1
+        if seen > max_nodes:
+            break
+
+        if isinstance(cur, dict):
+            # Try multiple text field names
+            text_val = cur.get("text") or cur.get("block_content")
+            if isinstance(text_val, str):
+                text = text_val.strip()
+                if text:
+                    # Try multiple bbox field names
+                    bbox, points = _bbox_from_any(cur.get("bbox"))
+                    if bbox is None:
+                        bbox, points = _bbox_from_any(cur.get("block_bbox"))
+                    if bbox is None:
+                        bbox, points = _bbox_from_any(cur.get("box"))
+                    if bbox is None:
+                        bbox, points = _bbox_from_any(cur.get("poly"))
+                    if bbox is None:
+                        bbox, points = _bbox_from_any(cur.get("points"))
+
+                    if bbox is not None:
+                        score_raw = cur.get("score", cur.get("rec_score", 1.0))
+                        try:
+                            score = float(score_raw)
+                        except Exception:
+                            score = 1.0
+                        items.append({"text": text, "score": score, "bbox": bbox, "points": points})
+
+            for v in cur.values():
+                if isinstance(v, (dict, list, tuple)):
+                    stack.append(v)
+            continue
+
+        if isinstance(cur, (list, tuple)):
+            for v in cur:
+                if isinstance(v, (dict, list, tuple)):
+                    stack.append(v)
+            continue
+
+    return items
 
 
 def _guess_field_label(text: str) -> Optional[str]:
@@ -121,6 +192,32 @@ class OCRService:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._vl: Any = None
+        self._warmup_started = False
+        self._warmup_error: Optional[str] = None
+
+    def is_ready(self) -> bool:
+        return self._vl is not None
+
+    def get_warmup_error(self) -> Optional[str]:
+        return self._warmup_error
+
+    def warmup_async(self) -> None:
+        """Start model download/init in a background thread (best-effort)."""
+
+        with self._lock:
+            if self._warmup_started:
+                return
+            self._warmup_started = True
+
+        def _run() -> None:
+            try:
+                self._get_vl()
+            except Exception as e:
+                # Store a compact error so the API can surface it.
+                self._warmup_error = f"{type(e).__name__}: {e}"
+
+        t = threading.Thread(target=_run, name="ocr-warmup", daemon=True)
+        t.start()
 
     def _select_device(self) -> str:
         """Return a PaddleOCRVL device string.
@@ -169,76 +266,39 @@ class OCRService:
             head = image_bytes[:16].hex()
             raise ValueError(f"Invalid image data (len={len(image_bytes)} head={head})") from e
         pipeline = self._get_vl()
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tmp:
-            pil.save(tmp, format="PNG")
-            tmp.flush()
-            output = pipeline.predict(tmp.name)
+        with tempfile.TemporaryDirectory(prefix="paddleocrvl_out_") as out_dir:
+            out_path = Path(out_dir)
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tmp:
+                pil.save(tmp, format="PNG")
+                tmp.flush()
+                output = pipeline.predict(tmp.name)
 
-        items: List[Dict[str, Any]] = []
-        for res in output or []:
-            if not isinstance(res, dict):
-                continue
+            # Official API pattern: iterate Result objects, save to JSON, parse JSON.
+            for res in output or []:
+                save_to_json = getattr(res, "save_to_json", None)
+                if callable(save_to_json):
+                    save_to_json(save_path=str(out_path))
 
-            # Prefer line-level OCR output if present.
-            ocr_result = res.get("ocr_result")
-            if isinstance(ocr_result, list) and ocr_result:
-                for r in ocr_result:
-                    if not isinstance(r, dict):
-                        continue
-                    text = str(r.get("text", "") or "").strip()
-                    if not text:
-                        continue
+            json_files = sorted(out_path.glob("**/*.json"))
+            if not json_files:
+                raise RuntimeError(
+                    "PaddleOCRVL produced no JSON outputs via res.save_to_json(). "
+                    "This usually indicates an installation/config mismatch."
+                )
 
-                    bbox_raw = r.get("bbox")
-                    if not bbox_raw:
-                        continue
+            items: List[Dict[str, Any]] = []
+            for jf in json_files:
+                try:
+                    text_content = jf.read_text(encoding="utf-8")
+                    payload = json.loads(text_content)
+                except Exception:
+                    continue
+                items.extend(_extract_ocr_items_from_json(payload))
 
-                    bbox: Optional[List[int]] = None
-                    points: Optional[List[List[float]]] = None
-
-                    if isinstance(bbox_raw, (list, tuple)) and len(bbox_raw) == 4 and not isinstance(bbox_raw[0], (list, tuple)):
-                        bbox = [int(bbox_raw[0]), int(bbox_raw[1]), int(bbox_raw[2]), int(bbox_raw[3])]
-                    elif isinstance(bbox_raw, (list, tuple)) and len(bbox_raw) == 4 and isinstance(bbox_raw[0], (list, tuple)):
-                        points = [[float(p[0]), float(p[1])] for p in bbox_raw]  # type: ignore[index]
-                        bbox = _bbox_points_to_xyxy(points)
-
-                    if not bbox:
-                        continue
-
-                    score_raw = r.get("score", r.get("rec_score", 1.0))
-                    try:
-                        score = float(score_raw)
-                    except Exception:
-                        score = 1.0
-
-                    items.append({"text": text, "score": score, "bbox": bbox, "points": points})
-                continue
-
-            # Fallback: document parsing layout regions (coarser regions).
-            layout = res.get("layout_parsing_result")
-            if isinstance(layout, dict):
-                regions = layout.get("layout_regions", [])
-                if isinstance(regions, list):
-                    for region in regions:
-                        if not isinstance(region, dict):
-                            continue
-                        text = str(region.get("text", "") or "").strip()
-                        if not text:
-                            continue
-                        bbox_raw = region.get("bbox")
-                        if not (isinstance(bbox_raw, (list, tuple)) and len(bbox_raw) == 4):
-                            continue
-                        try:
-                            bbox = [int(bbox_raw[0]), int(bbox_raw[1]), int(bbox_raw[2]), int(bbox_raw[3])]
-                        except Exception:
-                            continue
-                        items.append({"text": text, "score": 1.0, "bbox": bbox, "points": None})
-
-        if not items:
-            raise RuntimeError(
-                "PaddleOCRVL returned no OCR items. "
-                "If you're seeing a dependency error, install `paddleocr[doc-parser]` and `paddlex[ocr]`."
-            )
+            if not items:
+                raise RuntimeError(
+                    "PaddleOCRVL returned no OCR items after parsing JSON outputs."
+                )
 
         fields = _infer_fields_from_ocr_items(items)
         return OcrResult(items=items, fields=fields)
