@@ -38,6 +38,7 @@ def get_session_image(session_id: str):
 
 def _get_ocr_service_url() -> str:
     url = os.getenv("OCR_SERVICE_URL") or os.getenv("PADDLE_OCR_SERVICE_URL")
+    print(f"DEBUG: OCR_SERVICE_URL={os.getenv('OCR_SERVICE_URL')}, PADDLE_OCR_SERVICE_URL={os.getenv('PADDLE_OCR_SERVICE_URL')}, selected url={url}")
     if not url:
         raise HTTPException(status_code=500, detail="OCR service URL is not configured")
     return url.rstrip("/")
@@ -218,10 +219,12 @@ def _call_remote_ocr(image_bytes: bytes, filename: Optional[str], content_type: 
 
     try:
         payload = resp.json()
+        print(f"DEBUG: OCR payload: {payload}")
     except ValueError as exc:
         raise HTTPException(status_code=502, detail="OCR service returned invalid JSON") from exc
 
     items = _extract_ocr_items(payload)
+    print(f"DEBUG: extracted items: {items}")
     if not items:
         raise HTTPException(status_code=502, detail="OCR service returned no text boxes")
 
@@ -260,6 +263,7 @@ async def analyze_form(file: UploadFile = File(...)) -> UploadFormResponse:
     # Filter low-confidence OCR items
     MIN_CONFIDENCE = 0.5
     filtered_items = [item for item in ocr_items if item.get("score", 0) >= MIN_CONFIDENCE]
+    print(f"DEBUG: ocr_items count: {len(ocr_items)}, filtered_items count: {len(filtered_items)}")
     if not filtered_items:
         raise HTTPException(status_code=400, detail="No high-confidence OCR text found")
 
@@ -267,6 +271,7 @@ async def analyze_form(file: UploadFile = File(...)) -> UploadFormResponse:
     try:
         gemini = get_gemini_service()
         fields = gemini.analyze_form_fields(filtered_items, image_width, image_height)
+        print(f"DEBUG: gemini fields: {fields}")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Gemini API error: {str(exc)}") from exc
 

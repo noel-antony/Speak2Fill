@@ -1,7 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
+import 'dart:convert';
 import '../main.dart';
 import 'chat_screen.dart';
+
+const String backendBaseUrl = 'http://localhost:8000';
 
 /// UploadScreen - Entry point of the app
 class UploadScreen extends StatelessWidget {
@@ -205,24 +211,78 @@ class UploadScreen extends StatelessWidget {
   Future<void> _pickImage(BuildContext context, ImageSource source) async {
     final picker = ImagePicker();
     try {
-      final XFile? image = await picker.pickImage(source: source);
+      final XFile? image = await picker.pickImage(source: source, imageQuality: 100);
       if (image != null && context.mounted) {
-        // Navigate to ChatScreen
-        // In a real app, we'd pass the image path here
-        Navigator.push(
-          context,
-          MaterialPageRoute(builder: (context) => const ChatScreen()),
-        );
+        // Send to /analyze-form (multipart/form-data, field name 'file')
+        final uri = Uri.parse('$backendBaseUrl/analyze-form');
+        final request = http.MultipartRequest('POST', uri);
+
+        if (kIsWeb) {
+          // On web, use bytes since dart:io is not available
+          final bytes = await image.readAsBytes();
+          final filename = image.name.isNotEmpty ? image.name : 'upload.jpg';
+
+          // Infer mime type from filename extension (basic)
+          String lower = filename.toLowerCase();
+          String mimeMain = 'jpeg';
+          if (lower.endsWith('.png')) mimeMain = 'png';
+          else if (lower.endsWith('.webp')) mimeMain = 'webp';
+
+          request.files.add(
+            http.MultipartFile.fromBytes(
+              'file',
+              bytes,
+              filename: filename,
+              contentType: MediaType('image', mimeMain),
+            ),
+          );
+        } else {
+          request.files.add(await http.MultipartFile.fromPath('file', image.path));
+        }
+
+        debugPrint('Uploading image to $uri');
+        final streamed = await request.send();
+        final resp = await http.Response.fromStream(streamed);
+
+        if (resp.statusCode == 200) {
+          final data = json.decode(resp.body) as Map<String, dynamic>;
+          final sessionId = data['session_id'] as String?;
+          final imageWidth = (data['image_width'] as num?)?.toDouble();
+          final imageHeight = (data['image_height'] as num?)?.toDouble();
+          final fields = data['fields'] as List<dynamic>? ?? [];
+
+          if (sessionId != null && imageWidth != null && imageHeight != null) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => ChatScreen(
+                  sessionId: sessionId,
+                  imageWidth: imageWidth,
+                  imageHeight: imageHeight,
+                  fields: fields,
+                ),
+              ),
+            );
+          } else {
+            debugPrint('Invalid analyze-form response: $data');
+            _showError(context, 'Invalid analyze response');
+          }
+        } else {
+          debugPrint('Analyze-form failed: ${resp.statusCode} ${resp.body}');
+          _showError(context, 'Upload failed (${resp.statusCode})');
+        }
       }
     } catch (e) {
       debugPrint('Error picking image: $e');
-      // Fallback for demo if permission/camera fails (or web quirks)
       if (context.mounted) {
-         Navigator.push(
-          context,
-          MaterialPageRoute(builder: (context) => const ChatScreen()),
-        );
+        _showError(context, 'Image selection failed');
       }
     }
+  }
+
+  void _showError(BuildContext context, String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
   }
 }

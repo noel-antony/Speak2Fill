@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
-import '../mocks/mock_data.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import 'whiteboard_screen.dart';
+const String backendBaseUrl = 'http://localhost:8000';
 
 /// ChatScreen - Conversational interface with the AI assistant
 ///
@@ -10,7 +12,18 @@ import 'whiteboard_screen.dart';
 /// 3. Shows "Draw" action (navigates to Whiteboard)
 /// 4. Advances to next field
 class ChatScreen extends StatefulWidget {
-  const ChatScreen({super.key});
+  final String sessionId;
+  final double imageWidth;
+  final double imageHeight;
+  final List<dynamic> fields;
+
+  const ChatScreen({
+    super.key,
+    required this.sessionId,
+    required this.imageWidth,
+    required this.imageHeight,
+    required this.fields,
+  });
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -23,8 +36,6 @@ class _ChatScreenState extends State<ChatScreen> {
   // Chat messages history
   final List<Map<String, dynamic>> _messages = [];
 
-  // Current state
-  int _currentFieldIndex = 0;
   bool _isTyping = false;
   bool _hasStarted = false;
 
@@ -47,21 +58,11 @@ class _ChatScreenState extends State<ChatScreen> {
   void _startFormFlow() {
     setState(() {
       _hasStarted = true;
-      _askCurrentQuestion();
     });
+    _sendChatMessage("");
   }
 
-  void _askCurrentQuestion() {
-    if (_currentFieldIndex >= MockData.formFields.length) {
-      _addAssistantMessage(
-        'All done! You have successfully filled the form. Great job!',
-      );
-      return;
-    }
-
-    final field = MockData.formFields[_currentFieldIndex];
-    _addAssistantMessage(field['question']);
-  }
+  void _askCurrentQuestion() {}
 
   void _addAssistantMessage(String content) {
     setState(() {
@@ -88,63 +89,92 @@ class _ChatScreenState extends State<ChatScreen> {
   void _handleUserResponse(String text) async {
     _addUserMessage(text);
     _messageController.clear();
-
-    if (_currentFieldIndex >= MockData.formFields.length) return;
-
-    // Simulate thinking
-    setState(() => _isTyping = true);
-    await Future.delayed(const Duration(milliseconds: 800));
-    if (!mounted) return;
-    setState(() => _isTyping = false);
-
-    final field = MockData.formFields[_currentFieldIndex];
-    
-    String valueToWrite = text.toUpperCase();
-    if (valueToWrite.length < 2) {
-       // Demo fallback
-       valueToWrite = (field['example'] as String).toUpperCase();
-    }
-
-    _addAssistantMessage(field['response']);
-    
-    setState(() {
-      _messages.add({
-        'role': 'system_action',
-        'content': 'Tap to write on form',
-        'action_label': 'OPEN WRITING GUIDE',
-        'field_data': field,
-        'value_to_write': valueToWrite,
-      });
-    });
-    _scrollToBottom();
+    await _sendChatMessage(text);
   }
 
-  Future<void> _openWhiteboard(Map<String, dynamic> field, String valueToWrite) async {
+  Future<void> _sendChatMessage(String userMessage) async {
+    setState(() => _isTyping = true);
+    try {
+      final uri = Uri.parse('$backendBaseUrl/chat');
+      final payload = {
+        'session_id': widget.sessionId,
+        'user_message': userMessage,
+      };
+      final resp = await http.post(uri, headers: {
+        'Content-Type': 'application/json',
+      }, body: json.encode(payload));
+
+      if (resp.statusCode == 200) {
+        final data = json.decode(resp.body) as Map<String, dynamic>;
+        debugPrint('DEBUG: Chat response: $data');
+        
+        final assistantText = data['assistant_text'] as String?;
+        if (assistantText != null && assistantText.isNotEmpty) {
+          _addAssistantMessage(assistantText);
+        }
+
+        final action = data['action'] as Map<String, dynamic>?;
+        debugPrint('DEBUG: action object: $action');
+        
+        if (action != null && action['type'] == 'DRAW_GUIDE') {
+          // Backend response has action.type, action.field_label, action.text_to_write, action.bbox, etc.
+          final textToWrite = (action['text_to_write'] ?? '').toString();
+          final bboxList = action['bbox'] as List<dynamic>?;
+          final fieldLabel = (action['field_label'] ?? '').toString();
+          
+          debugPrint('DEBUG: DRAW_GUIDE action extracted:');
+          debugPrint('  text_to_write: $textToWrite');
+          debugPrint('  field_label: $fieldLabel');
+          debugPrint('  bbox: $bboxList');
+          
+          List<double> bbox = [];
+          if (bboxList != null && bboxList.isNotEmpty) {
+            bbox = bboxList.map((e) => (e as num).toDouble()).toList();
+            debugPrint('DEBUG: converted bbox to doubles: $bbox (length=${bbox.length})');
+          } else {
+            debugPrint('DEBUG: bboxList is null or empty!');
+          }
+
+          setState(() {
+            _messages.add({
+              'role': 'system_action',
+              'content': 'Tap to write on form',
+              'action_label': 'OPEN WRITING GUIDE',
+              'text_to_write': textToWrite,
+              'bbox': bbox,
+              'field_label': fieldLabel,
+            });
+          });
+          _scrollToBottom();
+        }
+      } else {
+        debugPrint('Chat failed: ${resp.statusCode} ${resp.body}');
+      }
+    } catch (e) {
+      debugPrint('Chat error: $e');
+    } finally {
+      if (mounted) setState(() => _isTyping = false);
+    }
+  }
+
+  Future<void> _openWhiteboard(String valueToWrite, List<double> bbox, String fieldLabel) async {
+    debugPrint('DEBUG: Opening whiteboard with session_id=${widget.sessionId}');
     await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => WhiteboardScreen(
           textToWrite: valueToWrite,
-          boundingBox: List<double>.from(field['bbox']),
-          imageWidth: MockData.imageWidth,
-          imageHeight: MockData.imageHeight,
-          fieldLabel: field['label'],
+          boundingBox: bbox,
+          imageWidth: widget.imageWidth,
+          imageHeight: widget.imageHeight,
+          fieldLabel: fieldLabel,
+          sessionId: widget.sessionId,
         ),
       ),
     );
 
-    // When they return, we assume they wrote it.
-    // Advance to next field
-    if (!mounted) return;
-    
-    setState(() {
-      _currentFieldIndex++;
-    });
-    
-    // Ask next question
-    await Future.delayed(const Duration(milliseconds: 600));
-    if (!mounted) return;
-    _askCurrentQuestion();
+    // When they return, confirm to backend
+    await _sendChatMessage('done');
   }
 
   void _scrollToBottom() {
@@ -190,8 +220,9 @@ class _ChatScreenState extends State<ChatScreen> {
                   return _ActionBubble(
                     label: msg['action_label'],
                     onPressed: () => _openWhiteboard(
-                      msg['field_data'], 
-                      msg['value_to_write']
+                      msg['text_to_write'] ?? '',
+                      (msg['bbox'] as List<double>? ?? const []),
+                      msg['field_label'] ?? '',
                     ),
                   );
                 }
