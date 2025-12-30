@@ -68,7 +68,10 @@ class _WhiteboardScreenState extends State<WhiteboardScreen> {
                   icon: const Icon(Icons.check_circle),
                   label: const Text('I WROTE IT'),
                   style: FilledButton.styleFrom(
-                    backgroundColor: Theme.of(context).colorScheme.secondary,
+                    backgroundColor: const Color(0xFF2563EB),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                   ),
                 ),
               ),
@@ -176,11 +179,18 @@ class _WhiteboardScreenState extends State<WhiteboardScreen> {
   Widget _buildImageWithBbox(Uint8List imageBytes) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        // Calculate display size
-        final maxWidth = constraints.maxWidth;
         final aspectRatio = widget.imageWidth / widget.imageHeight;
-        final displayWidth = maxWidth.clamp(300.0, 1200.0);
-        final displayHeight = displayWidth / aspectRatio;
+
+        double displayWidth = constraints.maxWidth;
+        double displayHeight = displayWidth / aspectRatio;
+
+        if (displayHeight > constraints.maxHeight) {
+          displayHeight = constraints.maxHeight;
+          displayWidth = displayHeight * aspectRatio;
+        }
+
+        displayWidth = displayWidth.clamp(200.0, constraints.maxWidth);
+        displayHeight = displayHeight.clamp(200.0, constraints.maxHeight);
 
         return Container(
           width: displayWidth,

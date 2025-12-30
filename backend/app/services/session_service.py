@@ -27,6 +27,7 @@ class SessionState(BaseModel):
     collected_values: Dict[str, str]
     image_width: int
     image_height: int
+    detected_language: Optional[str] = None
 
 
 class SessionService:
@@ -40,7 +41,8 @@ class SessionService:
         session_id: str,
         fields: List[FormField],
         image_width: int,
-        image_height: int
+        image_height: int,
+        detected_language: Optional[str] = None,
     ) -> SessionState:
         """Initialize a new form filling session"""
         state = SessionState(
@@ -50,7 +52,8 @@ class SessionService:
             fields=fields,
             collected_values={},
             image_width=image_width,
-            image_height=image_height
+            image_height=image_height,
+            detected_language=detected_language,
         )
         self._sessions[session_id] = state
         return state
@@ -107,6 +110,13 @@ class SessionService:
         state = self.get_session(session_id)
         if state:
             state.collected_values[field_id] = value
+            self.update_session(session_id, state)
+
+    def set_language(self, session_id: str, language_code: Optional[str]) -> None:
+        """Persist detected language for the session."""
+        state = self.get_session(session_id)
+        if state:
+            state.detected_language = language_code
             self.update_session(session_id, state)
 
 

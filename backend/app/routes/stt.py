@@ -1,5 +1,8 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from typing import Optional
 from app.services.sarvam_service import SarvamService
+from app.services.storage_service import store
+from app.services.session_service import session_service
 import logging
 
 logger = logging.getLogger(__name__)
@@ -8,7 +11,7 @@ router = APIRouter(tags=["stt"])
 
 def _lang_to_code(language: str) -> str:
     """Map short language code to Sarvam locale code."""
-    lang = (language or "ml").lower()
+    lang = (language or "en").lower()
     return {
         "ml": "ml-IN",
         "en": "en-IN",
@@ -21,7 +24,8 @@ def _lang_to_code(language: str) -> str:
 @router.post("/stt")
 async def stt(
     audio: UploadFile = File(...),
-    language: str = Form("ml")
+    language: str = Form("en"),
+    session_id: Optional[str] = Form(None)
 ):
     """
     Convert user speech → text using Sarvam Saarika (STT).
@@ -49,17 +53,38 @@ async def stt(
         logger.error(f"STT: Sarvam init failed: {e}")
         raise HTTPException(status_code=500, detail=f"Sarvam init failed: {e}")
     
-    language_code = _lang_to_code(language)
-    logger.info(f"STT: Using language_code={language_code}")
+    # Use Sarvam auto language detection by default (language_code="unknown" per docs)
+    language_code = "unknown"
+    logger.info(f"STT: Using language_code={language_code} (auto-detect)")
     
     try:
-        transcript = await sarvam.speech_to_text(content, language_code=language_code)
-        logger.info(f"STT: Transcript received: '{transcript}'")
+        transcript, detected_language = await sarvam.speech_to_text(content, language_code=language_code)
+        logger.info(f"STT: Transcript received: '{transcript}', detected_language={detected_language}")
     except Exception as e:
         logger.error(f"STT: Sarvam API failed: {e}")
         raise HTTPException(status_code=502, detail=f"STT failed: {e}")
-    
+
+    existing_session_lang = None
+    existing_db_lang = None
+
+    if session_id:
+        try:
+            session = session_service.get_session(session_id)
+            if session:
+                existing_session_lang = session.detected_language
+
+            existing_db_lang = store.get_language(session_id)
+            should_set = not (existing_session_lang or existing_db_lang)
+
+            if should_set and detected_language and detected_language != "unknown":
+                session_service.set_language(session_id, detected_language)
+                store.set_language(session_id, detected_language)
+        except Exception as e:
+            logger.warning(f"STT: Failed to persist language for session {session_id}: {e}")
+
+    resolved_language = detected_language or existing_session_lang or existing_db_lang or language
+
     return {
         "transcript": transcript,
-        "language": (language or "ml").lower()
+        "language": resolved_language
     }

@@ -44,7 +44,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
     # ===== STEP 2: Check if form is complete =====
     if not session_service.has_more_fields(req.session_id):
         return ChatResponse(
-            assistant_text="നിങ്ങൾ ഫോം പൂർത്തിയാക്കി. നന്ദി!",
+            assistant_text="You have completed the form. Thank you!",
             action=None
         )
     
@@ -53,26 +53,53 @@ async def chat(req: ChatRequest) -> ChatResponse:
     if not current_field:
         raise HTTPException(status_code=500, detail="No current field")
     
+    text = (req.user_text or req.user_message or "").strip()
+    event = req.event or "USER_SPOKE"
+
+    confirmation_words = {"done", "finished", "ok", "completed", "yes", "y", "confirmed"}
+    if event == "USER_SPOKE" and text:
+        if text.lower() in confirmation_words:
+            event = "CONFIRM_DONE"
+
+    if event == "SKIP_FIELD":
+        session_service.advance_to_next_field(req.session_id)
+
+        if not session_service.has_more_fields(req.session_id):
+            return ChatResponse(
+                assistant_text="You skipped the last field. The form is complete.",
+                action=None
+            )
+
+        next_field = session_service.get_current_field(req.session_id)
+        if not next_field:
+            raise HTTPException(status_code=500, detail="No next field after skip")
+
+        session_service.set_phase(req.session_id, Phase.ASK_INPUT)
+        return ChatResponse(
+            assistant_text=f"Skipped. Please provide the value for {next_field.label}.",
+            action=None
+        )
+
     sarvam = SarvamService()
     
     # ===== STATE MACHINE LOGIC =====
     
     if state.phase == Phase.ASK_INPUT:
         # ===== PHASE: ASK_INPUT =====
-        if req.event != "USER_SPOKE":
+        if event != "USER_SPOKE":
             # Invalid event for this phase
             return ChatResponse(
-                assistant_text=f"ദയവായി {current_field.label} നു വേണ്ട മൂല്യം സംസാരിക്കുക.",
+                assistant_text=f"Please speak the value for {current_field.label}.",
                 action=None
             )
         
-        if not req.user_text:
+        if not text:
             raise HTTPException(status_code=400, detail="user_text required for USER_SPOKE event")
         
         # Extract value using Sarvam-M
         extracted_value = await sarvam.extract_field_value(
             field_label=current_field.label,
-            user_text=req.user_text,
+            user_text=text,
             write_language=current_field.write_language
         )
         
@@ -83,7 +110,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
         session_service.set_phase(req.session_id, Phase.AWAIT_CONFIRMATION)
         
         # Generate instruction text
-        instruction_text = f"ദയവായി ഹൈലൈറ്റ് ചെയ്ത ബോക്സിൽ {extracted_value} എഴുതുക."
+        instruction_text = f"Please write {extracted_value} inside the highlighted box."
         
         # Return with draw guide action
         return ChatResponse(
@@ -91,6 +118,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
             action=DrawGuideAction(
                 type="DRAW_GUIDE",
                 field_id=current_field.field_id,
+                    field_label=current_field.label,
                 text_to_write=extracted_value,
                 bbox=current_field.bbox,
                 image_width=state.image_width,
@@ -100,13 +128,14 @@ async def chat(req: ChatRequest) -> ChatResponse:
     
     elif state.phase == Phase.AWAIT_CONFIRMATION:
         # ===== PHASE: AWAIT_CONFIRMATION =====
-        if req.event != "CONFIRM_DONE":
+        if event != "CONFIRM_DONE":
             # User is speaking when they should be confirming
             return ChatResponse(
-                assistant_text="ദയവായി ആദ്യം എഴുതുക, പിന്നെ 'ഞാൻ എഴുതിച്ചു' ബട്ടൺ അമർത്തുക.",
+                assistant_text="Please write it down first, then press the 'Done Writing' button.",
                 action=DrawGuideAction(
                     type="DRAW_GUIDE",
                     field_id=current_field.field_id,
+                    field_label=current_field.label,
                     text_to_write=state.collected_values.get(current_field.field_id, ""),
                     bbox=current_field.bbox,
                     image_width=state.image_width,
@@ -120,7 +149,7 @@ async def chat(req: ChatRequest) -> ChatResponse:
         # Check if more fields remain
         if not session_service.has_more_fields(req.session_id):
             return ChatResponse(
-                assistant_text="ശബാശ്! ഫോം പൂർത്തിയായി.",
+                assistant_text="Great job! The form is complete.",
                 action=None
             )
         
@@ -128,17 +157,17 @@ async def chat(req: ChatRequest) -> ChatResponse:
         next_field = session_service.get_current_field(req.session_id)
         if not next_field:
             return ChatResponse(
-                assistant_text="ഫോം പൂർത്തിയായി.",
+                assistant_text="The form is complete.",
                 action=None
             )
         
         # Ask for next field value
-        next_instruction = f"ഇപ്പോൾ ദയവായി {next_field.label} നു വേണ്ട മൂല്യം സംസാരിക്കുക."
+        next_instruction = f"Now please say the value for {next_field.label}."
         
         return ChatResponse(
             assistant_text=next_instruction,
             action=None
         )
-    
+
     # Should not reach here
     raise HTTPException(status_code=500, detail="Invalid state")

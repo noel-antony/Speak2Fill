@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
 class HealthResponse(BaseModel):
@@ -33,13 +33,34 @@ class UploadFormResponse(BaseModel):
 
 class ChatRequest(BaseModel):
     session_id: str = Field(..., description="Session identifier")
-    event: Literal["USER_SPOKE", "CONFIRM_DONE"] = Field(..., description="Event type")
+    event: Literal["USER_SPOKE", "CONFIRM_DONE", "SKIP_FIELD"] = Field("USER_SPOKE", description="Event type")
     user_text: Optional[str] = Field(None, description="Transcribed user speech (required for USER_SPOKE)")
+    user_message: Optional[str] = Field(None, alias="user_message", description="Legacy field for user text")
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    @field_validator("event", mode="before")
+    @classmethod
+    def normalize_event(cls, v: Optional[str]) -> str:
+        if not v:
+            return "USER_SPOKE"
+        normalized = str(v).strip().upper().replace(" ", "_")
+        mapping = {
+            "USER": "USER_SPOKE",
+            "USER_SPOKE": "USER_SPOKE",
+            "CONFIRM": "CONFIRM_DONE",
+            "CONFIRM_DONE": "CONFIRM_DONE",
+            "CONFIRMATION": "CONFIRM_DONE",
+            "SKIP": "SKIP_FIELD",
+            "SKIP_FIELD": "SKIP_FIELD",
+            "SKIPFIELD": "SKIP_FIELD",
+        }
+        return mapping.get(normalized, "USER_SPOKE")
 
 
 class DrawGuideAction(BaseModel):
     type: Literal["DRAW_GUIDE"] = Field("DRAW_GUIDE", description="Action type")
     field_id: str = Field(..., description="Field identifier")
+    field_label: str = Field(..., description="Human-readable field label")
     text_to_write: str = Field(..., description="Text user should write")
     bbox: List[int] = Field(..., min_length=4, max_length=4, description="[x1,y1,x2,y2] where to write")
     image_width: int = Field(..., description="Image width for coordinate scaling")

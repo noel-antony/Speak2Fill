@@ -10,6 +10,9 @@ class SttService {
   static final SttService _instance = SttService._internal();
   late final AudioRecorder _record;
   bool _isInitialized = false;
+  String? _pendingBackendUrl;
+  String _pendingLanguage = "ml";
+  String? _pendingSessionId;
 
   SttService._internal();
 
@@ -32,26 +35,23 @@ class SttService {
     }
   }
 
-  /// Record audio once and send to backend /stt, return transcript.
-  /// [language] defaults to "ml".
-  /// [duration] is the max recording duration in seconds.
-  Future<String?> listenOnce({
+  /// Start recording until stopped. Call [stopAndTranscribe] to finish.
+  Future<bool> startRecording({
     required String backendUrl,
     String language = "ml",
-    int duration = 5,
+    String? sessionId,
   }) async {
     try {
       if (!_isInitialized) {
-        bool initialized = await initialize();
+        final initialized = await initialize();
         if (!initialized) {
           print('STT not available');
-          return null;
+          return false;
         }
       }
 
-      // Start recording; on web we let the plugin pick the storage and fetch via blob URL
       final tmpPath = kIsWeb
-          ? 'dummy'  // Web ignores path and uses blob
+          ? 'dummy'
           : '${Directory.systemTemp.path}/s2f_rec_${DateTime.now().millisecondsSinceEpoch}.wav';
 
       final config = RecordConfig(
@@ -59,10 +59,26 @@ class SttService {
         bitRate: 128000,
         sampleRate: 44100,
       );
-      
-      await _record.start(config, path: tmpPath);
 
-      await Future.delayed(Duration(seconds: duration));
+      await _record.start(config, path: tmpPath);
+      _pendingBackendUrl = backendUrl;
+      _pendingLanguage = language;
+      _pendingSessionId = sessionId;
+      return true;
+    } catch (e) {
+      print('STT startRecording error: $e');
+      return false;
+    }
+  }
+
+  /// Stop recording and send to backend /stt, returning the transcript.
+  Future<String?> stopAndTranscribe() async {
+    try {
+      final backendUrl = _pendingBackendUrl;
+      if (backendUrl == null) {
+        print('STT stop called without an active recording backend URL');
+        return null;
+      }
 
       final path = await _record.stop();
       if (path == null) {
@@ -76,10 +92,9 @@ class SttService {
         return null;
       }
 
-      // Send to backend /stt
       final url = Uri.parse('$backendUrl/stt');
       final request = http.MultipartRequest('POST', url)
-        ..fields['language'] = language
+        ..fields['language'] = _pendingLanguage
         ..files.add(
           http.MultipartFile.fromBytes(
             'audio',
@@ -88,6 +103,10 @@ class SttService {
             contentType: MediaType('audio', 'wav'),
           ),
         );
+
+      if (_pendingSessionId != null) {
+        request.fields['session_id'] = _pendingSessionId!;
+      }
 
       final streamed = await request.send();
       final resp = await http.Response.fromStream(streamed);
@@ -100,8 +119,11 @@ class SttService {
       final transcript = data['transcript'] as String?;
       return (transcript == null || transcript.isEmpty) ? null : transcript;
     } catch (e) {
-      print('STT listen error: $e');
+      print('STT stopAndTranscribe error: $e');
       return null;
+    } finally {
+      _pendingBackendUrl = null;
+      _pendingSessionId = null;
     }
   }
 

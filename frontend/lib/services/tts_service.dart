@@ -29,6 +29,7 @@ class TtsService {
     String text, {
     required String backendUrl,
     String language = "ml",
+    String? sessionId,
     String voice = "default",
   }) async {
     try {
@@ -42,6 +43,7 @@ class TtsService {
         body: jsonEncode({
           'text': text,
           'language': language,
+          if (sessionId != null) 'session_id': sessionId,
           'voice': voice,
         }),
       );

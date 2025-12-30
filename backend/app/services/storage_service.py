@@ -141,7 +141,7 @@ class SQLiteSessionStore:
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         def _op(conn: sqlite3.Connection) -> Optional[Dict[str, Any]]:
             row = conn.execute(
-                "SELECT session_id, created_at, filename, ocr_items_json, fields_json, image_width, image_height, phase, gemini_live_session_id FROM sessions WHERE session_id = ?",
+                "SELECT session_id, created_at, filename, ocr_items_json, fields_json, image_width, image_height, phase, gemini_live_session_id, language FROM sessions WHERE session_id = ?",
                 (session_id,),
             ).fetchone()
             if row is None:
@@ -167,6 +167,7 @@ class SQLiteSessionStore:
                 "image_height": image_height,
                 "phase": row.get("phase") if isinstance(row, dict) else row["phase"],
                 "gemini_live_session_id": row.get("gemini_live_session_id") if isinstance(row, dict) else row["gemini_live_session_id"],
+                "language": row.get("language") if isinstance(row, dict) else row["language"],
             }
 
         return self._with_db(_op)
@@ -290,6 +291,32 @@ class SQLiteSessionStore:
             if row is None:
                 return "COLLECT_DATA"
             return str(row["phase"]) or "COLLECT_DATA"
+
+        return self._with_db(_op)
+
+    def set_language(self, session_id: str, language_code: Optional[str]) -> None:
+        """Persist detected language code (e.g., en-IN, ml-IN)."""
+
+        def _op(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE sessions SET language = ? WHERE session_id = ?",
+                (language_code or "en", session_id),
+            )
+            conn.commit()
+
+        self._with_db(_op)
+
+    def get_language(self, session_id: str) -> Optional[str]:
+        """Fetch stored language for the session."""
+
+        def _op(conn: sqlite3.Connection) -> Optional[str]:
+            row = conn.execute(
+                "SELECT language FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return row["language"]
 
         return self._with_db(_op)
 

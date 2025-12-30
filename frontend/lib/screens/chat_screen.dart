@@ -280,15 +280,19 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
             ),
             const SizedBox(width: 12),
-            Container(
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.primary,
+            DecoratedBox(
+              decoration: const BoxDecoration(
                 shape: BoxShape.circle,
+                gradient: LinearGradient(
+                  colors: [Color(0xFF6366F1), Color(0xFF22C55E)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
                 boxShadow: [
                   BoxShadow(
-                    color: Theme.of(context).colorScheme.primary.withOpacity(0.4),
-                    blurRadius: 10,
-                    offset: const Offset(0, 4),
+                    color: Color(0x406366F1),
+                    blurRadius: 12,
+                    offset: Offset(0, 6),
                   ),
                 ],
               ),
@@ -299,7 +303,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 },
                 icon: const Icon(Icons.send_rounded, color: Colors.white),
                 iconSize: 24,
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.all(14),
               ),
             ),
           ],

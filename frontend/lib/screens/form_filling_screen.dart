@@ -32,9 +32,11 @@ class _FormFillingScreenState extends State<FormFillingScreen> {
 
   bool _isRecording = false;
   bool _isProcessing = false;
-  String _instructionText = "ദയവായി 'സംസാരിക്കുക' ബട്ടൺ അമർത്തുക";
+  String _instructionText = "Tap Speak to answer";
   String? _currentPhase; // "ASK_INPUT" or "AWAIT_CONFIRMATION"
   DrawGuideAction? _currentAction;
+  Future<Uint8List>? _formImageFuture;
+  Uint8List? _cachedImage;
 
   @override
   void initState() {
@@ -46,6 +48,8 @@ class _FormFillingScreenState extends State<FormFillingScreen> {
     // Initialize TTS and STT services
     await _tts.initialize();
     await _stt.initialize();
+
+    _formImageFuture = _loadFormImage();
 
     // Start form filling
     _startFormFilling();
@@ -63,14 +67,14 @@ class _FormFillingScreenState extends State<FormFillingScreen> {
     // Backend will respond with first field instruction
     setState(() {
       _isProcessing = true;
-      _instructionText = "ലോഡ് ചെയ്യുന്നു...";
+      _instructionText = "Loading...";
     });
 
     try {
       final response = await _sendChatRequest(event: "CONFIRM_DONE");
       await _handleChatResponse(response);
     } catch (e) {
-      _showError("ആരംഭത്തിൽ പിശക്: $e");
+      _showError("Error while starting: $e");
     } finally {
       setState(() => _isProcessing = false);
     }
@@ -111,45 +115,59 @@ class _FormFillingScreenState extends State<FormFillingScreen> {
     });
 
     // Speak instruction using backend TTS
-    await _tts.speak(assistantText, backendUrl: widget.backendUrl, language: "ml");
+    await _tts.speak(
+      assistantText,
+      backendUrl: widget.backendUrl,
+      sessionId: widget.sessionId,
+    );
   }
 
-  Future<void> _onSpeakPressed() async {
-    if (_isRecording || _isProcessing) return;
+  Future<void> _onMicTapped() async {
+    if (_isProcessing) return;
+
+    if (!_isRecording) {
+      final started = await _stt.startRecording(
+        backendUrl: widget.backendUrl,
+        sessionId: widget.sessionId,
+      );
+      if (started) {
+        setState(() {
+          _isRecording = true;
+          _instructionText = "Listening... tap again to stop";
+        });
+      } else {
+        _showError("Microphone is unavailable");
+      }
+      return;
+    }
 
     setState(() {
-      _isRecording = true;
-      _instructionText = "ശ്രവിക്കുന്നു...";
+      _isProcessing = true;
+      _instructionText = "Processing your answer...";
     });
 
     try {
-      // Record audio and send to backend STT
-      final transcript = await _stt.listenOnce(
-        backendUrl: widget.backendUrl,
-        language: "ml",
-        duration: 5,
-      );
-
+      final transcript = await _stt.stopAndTranscribe();
       setState(() => _isRecording = false);
 
       if (transcript == null || transcript.isEmpty) {
-        _showError("ഒന്നും കേട്ടില്ല, ദയവായി വീണ്ടും സംസാരിക്കുക");
-        setState(() => _instructionText = "ദയവായി വീണ്ടും സംസാരിക്കുക");
+        _showError("We did not catch that. Please try again.");
+        setState(() => _instructionText = "Tap Speak and try again");
         return;
       }
 
-      // Send USER_SPOKE to /chat
       await _processUserInput(transcript);
     } catch (e) {
-      setState(() => _isRecording = false);
-      _showError("റെക്കോർഡിംഗ് പിശക്: $e");
+      _showError("Recording failed: $e");
+    } finally {
+      setState(() => _isProcessing = false);
     }
   }
 
   Future<void> _processUserInput(String transcript) async {
     setState(() {
       _isProcessing = true;
-      _instructionText = "പ്രോസസ്സിങ്...";
+      _instructionText = "Processing...";
     });
 
     try {
@@ -160,7 +178,7 @@ class _FormFillingScreenState extends State<FormFillingScreen> {
 
       await _handleChatResponse(chatResponse);
     } catch (e) {
-      _showError("പ്രോസസ്സിങ് പിശക്: $e");
+      _showError("Processing error: $e");
     } finally {
       setState(() => _isProcessing = false);
     }
@@ -171,14 +189,32 @@ class _FormFillingScreenState extends State<FormFillingScreen> {
 
     setState(() {
       _isProcessing = true;
-      _instructionText = "അടുത്ത ഫീൽഡ്...";
+      _instructionText = "Moving to the next field...";
     });
 
     try {
       final response = await _sendChatRequest(event: "CONFIRM_DONE");
       await _handleChatResponse(response);
     } catch (e) {
-      _showError("സ്ഥിരീകരണ പിശക്: $e");
+      _showError("Confirmation failed: $e");
+    } finally {
+      setState(() => _isProcessing = false);
+    }
+  }
+
+  Future<void> _onSkipPressed() async {
+    if (_isProcessing) return;
+
+    setState(() {
+      _isProcessing = true;
+      _instructionText = "Skipping this field...";
+    });
+
+    try {
+      final response = await _sendChatRequest(event: "SKIP_FIELD");
+      await _handleChatResponse(response);
+    } catch (e) {
+      _showError("Skip failed: $e");
     } finally {
       setState(() => _isProcessing = false);
     }
@@ -248,7 +284,7 @@ class _FormFillingScreenState extends State<FormFillingScreen> {
 
   Widget _buildFormImageWithHighlight() {
     return FutureBuilder<Uint8List>(
-      future: _fetchFormImage(),
+      future: _formImageFuture,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const CircularProgressIndicator();
@@ -261,36 +297,57 @@ class _FormFillingScreenState extends State<FormFillingScreen> {
           );
         }
 
-        return Stack(
-          children: [
-            // Form image
-            Image.memory(
-              snapshot.data!,
-              fit: BoxFit.contain,
-            ),
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final aspect = widget.imageWidth / widget.imageHeight;
+            double displayWidth = constraints.maxWidth;
+            double displayHeight = displayWidth / aspect;
 
-            // Highlight overlay
-            if (_currentAction != null)
-              CustomPaint(
-                painter: HighlightPainter(
-                  bbox: _currentAction!.bbox,
-                  imageWidth: widget.imageWidth,
-                  imageHeight: widget.imageHeight,
+            if (displayHeight > constraints.maxHeight) {
+              displayHeight = constraints.maxHeight;
+              displayWidth = displayHeight * aspect;
+            }
+
+            return Center(
+              child: SizedBox(
+                width: displayWidth,
+                height: displayHeight,
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: Image.memory(
+                        snapshot.data!,
+                        fit: BoxFit.contain,
+                      ),
+                    ),
+                    if (_currentAction != null)
+                      CustomPaint(
+                        size: Size(displayWidth, displayHeight),
+                        painter: HighlightPainter(
+                          bbox: _currentAction!.bbox,
+                          imageWidth: widget.imageWidth,
+                          imageHeight: widget.imageHeight,
+                        ),
+                      ),
+                  ],
                 ),
-                size: Size.infinite,
               ),
-          ],
+            );
+          },
         );
       },
     );
   }
 
-  Future<Uint8List> _fetchFormImage() async {
+  Future<Uint8List> _loadFormImage() async {
+    if (_cachedImage != null) return _cachedImage!;
+
     final url = Uri.parse('${widget.backendUrl}/session/${widget.sessionId}/image');
     final response = await http.get(url);
 
     if (response.statusCode == 200) {
-      return response.bodyBytes;
+      _cachedImage = response.bodyBytes;
+      return _cachedImage!;
     }
 
     throw Exception('Failed to load image');
@@ -304,52 +361,72 @@ class _FormFillingScreenState extends State<FormFillingScreen> {
         children: [
           if (_currentPhase == "ASK_INPUT" || _currentPhase == null)
             _buildSpeakButton(),
-          if (_currentPhase == "AWAIT_CONFIRMATION")
+          if (_currentPhase == "AWAIT_CONFIRMATION") ...[
             _buildConfirmButton(),
+            const SizedBox(width: 12),
+            _buildSkipButton(),
+          ],
+          if (_currentPhase == "ASK_INPUT") ...[
+            const SizedBox(width: 12),
+            _buildSkipButton(),
+          ],
         ],
       ),
     );
   }
 
   Widget _buildSpeakButton() {
-    return ElevatedButton.icon(
-      onPressed: _isProcessing || _isRecording ? null : _onSpeakPressed,
+    return FilledButton.icon(
+      onPressed: _isProcessing ? null : _onMicTapped,
       icon: Icon(
-        _isRecording ? Icons.mic : Icons.mic_none,
-        size: 32,
+        _isRecording ? Icons.stop_circle : Icons.mic,
+        size: 28,
       ),
       label: Text(
-        _isRecording ? "ശ്രവിക്കുന്നു..." : "🎤 സംസാരിക്കുക",
+        _isRecording ? "Stop" : "Speak",
         style: const TextStyle(
-          fontSize: 20,
-          fontWeight: FontWeight.bold,
+          fontSize: 18,
+          fontWeight: FontWeight.w700,
         ),
       ),
-      style: ElevatedButton.styleFrom(
-        backgroundColor: const Color(0xFF6C63FF),
-        foregroundColor: Colors.white,
-        padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 20),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      style: FilledButton.styleFrom(
+        backgroundColor: _isRecording ? const Color(0xFFEF4444) : const Color(0xFF2563EB),
+        padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 18),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        elevation: 6,
+        shadowColor: Colors.black26,
       ),
     );
   }
 
   Widget _buildConfirmButton() {
-    return ElevatedButton.icon(
+    return FilledButton.icon(
       onPressed: _isProcessing ? null : _onConfirmPressed,
-      icon: const Icon(Icons.check_circle, size: 32),
+      icon: const Icon(Icons.check_circle, size: 24),
       label: const Text(
-        "✅ ഞാൻ എഴുതിച്ചു",
+        "Done writing",
         style: TextStyle(
-          fontSize: 20,
-          fontWeight: FontWeight.bold,
+          fontSize: 18,
+          fontWeight: FontWeight.w700,
         ),
       ),
-      style: ElevatedButton.styleFrom(
-        backgroundColor: const Color(0xFF4CAF50),
-        foregroundColor: Colors.white,
-        padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 20),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      style: FilledButton.styleFrom(
+        backgroundColor: const Color(0xFF10B981),
+        padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 16),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        elevation: 4,
+      ),
+    );
+  }
+
+  Widget _buildSkipButton() {
+    return OutlinedButton.icon(
+      onPressed: _isProcessing ? null : _onSkipPressed,
+      icon: const Icon(Icons.skip_next_rounded),
+      label: const Text("Skip field"),
+      style: OutlinedButton.styleFrom(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       ),
     );
   }

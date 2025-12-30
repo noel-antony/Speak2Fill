@@ -24,7 +24,7 @@ def create_app() -> FastAPI:
         allow_origins=[
             "http://localhost:5000",  # Flutter web frontend (dev)
             "http://localhost:8000",  # backend itself (dev)
-            os.getenv("FRONTEND_URL", "https://speak2fill.web.app/"),  # production frontend
+            os.getenv("FRONTEND_URL", "https://speak2fill.web.app"),  # production frontend
         ],
         allow_credentials=True,
         allow_methods=["*"],
