@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'whiteboard_screen.dart';
-const String backendBaseUrl = 'http://192.168.1.100:8000';
+const String backendBaseUrl = 'https://speak2fill.onrender.com';
 
 /// ChatScreen - Conversational interface with the AI assistant
 ///
