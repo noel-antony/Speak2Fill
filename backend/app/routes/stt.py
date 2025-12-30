@@ -11,14 +11,26 @@ router = APIRouter(tags=["stt"])
 
 def _lang_to_code(language: str) -> str:
     """Map short language code to Sarvam locale code."""
-    lang = (language or "en").lower()
+    lang = (language or "en").lower().replace("_", "-")
+    if "-" in lang:
+        lang = lang.split("-")[0]
     return {
         "ml": "ml-IN",
         "en": "en-IN",
         "hi": "hi-IN",
         "ta": "ta-IN",
         "te": "te-IN",
-    }.get(lang, "ml-IN")
+    }.get(lang, "en-IN")
+
+
+def _normalize_lang(language: Optional[str]) -> str:
+    if not language:
+        return "en"
+    lang = language.lower().replace("_", "-")
+    if "-" in lang:
+        lang = lang.split("-")[0]
+    allowed = {"en", "hi", "ml", "ta", "te"}
+    return lang if lang in allowed else "en"
 
 
 @router.post("/stt")
@@ -59,6 +71,7 @@ async def stt(
     
     try:
         transcript, detected_language = await sarvam.speech_to_text(content, language_code=language_code)
+        detected_language = _normalize_lang(detected_language)
         logger.info(f"STT: Transcript received: '{transcript}', detected_language={detected_language}")
     except Exception as e:
         logger.error(f"STT: Sarvam API failed: {e}")
@@ -82,7 +95,7 @@ async def stt(
         except Exception as e:
             logger.warning(f"STT: Failed to persist language for session {session_id}: {e}")
 
-    resolved_language = detected_language or existing_session_lang or existing_db_lang or language
+    resolved_language = detected_language or existing_session_lang or existing_db_lang or _normalize_lang(language)
 
     return {
         "transcript": transcript,

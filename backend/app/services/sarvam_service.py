@@ -154,6 +154,51 @@ Keep it brief and natural in {target_language}."""
             return instruction
         except Exception as e:
             raise RuntimeError(f"Sarvam instruction failed: {e}") from e
+
+    async def translate_text(self, text: str, target_language: str = "en") -> str:
+        """
+        Translate arbitrary assistant text into the target language.
+
+        Args:
+            text: English text to translate
+            target_language: language code such as en, hi, ml
+
+        Returns:
+            Translated text (or original on stub/failure)
+        """
+        import asyncio
+
+        if self.stub or target_language == "en":
+            return text
+
+        prompt = f"""Translate the following assistant message into {target_language}.
+Preserve meaning and keep it concise.
+
+Message:
+{text}
+"""
+
+        messages = [
+            {
+                "role": "system",
+                "content": "You are a precise translator. Return only the translated text without quotes.",
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ]
+
+        try:
+            response = await asyncio.to_thread(
+                self.client.chat.completions,
+                messages=messages,
+                temperature=0.2,
+            )
+            translated = response.choices[0].message.content.strip()
+            return translated
+        except Exception as e:
+            raise RuntimeError(f"Sarvam translation failed: {e}") from e
     
     async def text_to_speech(
         self, 

@@ -11,14 +11,16 @@ router = APIRouter(tags=["tts"])
 
 
 def _lang_to_code(language: str) -> str:
-    lang = (language or "en").lower()
+    lang = (language or "en").lower().replace("_", "-")
+    if "-" in lang:
+        lang = lang.split("-")[0]
     return {
         "ml": "ml-IN",
         "en": "en-IN",
         "hi": "hi-IN",
         "ta": "ta-IN",
         "te": "te-IN",
-    }.get(lang, "ml-IN")
+    }.get(lang, "en-IN")
 
 
 def _voice_to_speaker(voice: str) -> str:

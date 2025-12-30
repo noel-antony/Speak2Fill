@@ -16,10 +16,33 @@ from typing import Optional
 from app.schemas.models import ChatRequest, ChatResponse, DrawGuideAction
 from app.services.sarvam_service import SarvamService
 from app.services.session_service import session_service, Phase
+from app.services.storage_service import store
 import logging
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["chat"])
+
+
+def _normalize_language(lang: Optional[str]) -> str:
+    """Normalize various language codes to short form used across the app."""
+    if not lang:
+        return "en"
+    lower = str(lang).strip().lower().replace("_", "-")
+    # Prefer short code before hyphen if present, e.g., hi-IN -> hi
+    if "-" in lower:
+        lower = lower.split("-")[0]
+    allowed = {"en", "hi", "ml", "ta", "te"}
+    return lower if lower in allowed else "en"
+
+
+async def _translate_if_needed(text: str, lang: str, sarvam: SarvamService) -> str:
+    if lang == "en":
+        return text
+    try:
+        return await sarvam.translate_text(text, target_language=lang)
+    except Exception as e:
+        logger.warning(f"Translation failed for lang={lang}: {e}")
+        return text
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -40,11 +63,17 @@ async def chat(req: ChatRequest) -> ChatResponse:
     state = session_service.get_session(req.session_id)
     if not state:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    # Resolve user language: first detected language stored in session or DB, fallback to English.
+    stored_lang = state.detected_language or store.get_language(req.session_id)
+    user_lang = _normalize_language(stored_lang)
     
     # ===== STEP 2: Check if form is complete =====
     if not session_service.has_more_fields(req.session_id):
+        sarvam = SarvamService()
+        completed_text = await _translate_if_needed("You have completed the form. Thank you!", user_lang, sarvam)
         return ChatResponse(
-            assistant_text="You have completed the form. Thank you!",
+            assistant_text=completed_text,
             action=None
         )
     
@@ -65,8 +94,10 @@ async def chat(req: ChatRequest) -> ChatResponse:
         session_service.advance_to_next_field(req.session_id)
 
         if not session_service.has_more_fields(req.session_id):
+            sarvam = SarvamService()
+            skip_last_text = await _translate_if_needed("You skipped the last field. The form is complete.", user_lang, sarvam)
             return ChatResponse(
-                assistant_text="You skipped the last field. The form is complete.",
+                assistant_text=skip_last_text,
                 action=None
             )
 
@@ -75,8 +106,14 @@ async def chat(req: ChatRequest) -> ChatResponse:
             raise HTTPException(status_code=500, detail="No next field after skip")
 
         session_service.set_phase(req.session_id, Phase.ASK_INPUT)
+        sarvam = SarvamService()
+        skip_text = await _translate_if_needed(
+            f"Skipped. Please provide the value for {next_field.label}.",
+            user_lang,
+            sarvam,
+        )
         return ChatResponse(
-            assistant_text=f"Skipped. Please provide the value for {next_field.label}.",
+            assistant_text=skip_text,
             action=None
         )
 
@@ -88,8 +125,11 @@ async def chat(req: ChatRequest) -> ChatResponse:
         # ===== PHASE: ASK_INPUT =====
         if event != "USER_SPOKE":
             # Invalid event for this phase
+            speak_text = await _translate_if_needed(
+                f"Please speak the value for {current_field.label}.", user_lang, sarvam
+            )
             return ChatResponse(
-                assistant_text=f"Please speak the value for {current_field.label}.",
+                assistant_text=speak_text,
                 action=None
             )
         
@@ -109,8 +149,19 @@ async def chat(req: ChatRequest) -> ChatResponse:
         # Switch to AWAIT_CONFIRMATION phase
         session_service.set_phase(req.session_id, Phase.AWAIT_CONFIRMATION)
         
-        # Generate instruction text
-        instruction_text = f"Please write {extracted_value} inside the highlighted box."
+        # Generate instruction text in the user's language
+        if user_lang == "en":
+            instruction_text = f"Please write {extracted_value} inside the highlighted box."
+        else:
+            try:
+                instruction_text = await sarvam.generate_instruction_text(
+                    field_label=current_field.label,
+                    extracted_value=extracted_value,
+                    target_language=user_lang,
+                )
+            except Exception as e:
+                logger.warning(f"Instruction generation failed for lang={user_lang}: {e}")
+                instruction_text = f"Please write {extracted_value} inside the highlighted box."
         
         # Return with draw guide action
         return ChatResponse(
@@ -131,7 +182,11 @@ async def chat(req: ChatRequest) -> ChatResponse:
         if event != "CONFIRM_DONE":
             # User is speaking when they should be confirming
             return ChatResponse(
-                assistant_text="Please write it down first, then press the 'Done Writing' button.",
+                assistant_text=await _translate_if_needed(
+                    "Please write it down first, then press the 'Done Writing' button.",
+                    user_lang,
+                    sarvam,
+                ),
                 action=DrawGuideAction(
                     type="DRAW_GUIDE",
                     field_id=current_field.field_id,
@@ -148,21 +203,28 @@ async def chat(req: ChatRequest) -> ChatResponse:
         
         # Check if more fields remain
         if not session_service.has_more_fields(req.session_id):
+            done_text = await _translate_if_needed("Great job! The form is complete.", user_lang, sarvam)
             return ChatResponse(
-                assistant_text="Great job! The form is complete.",
+                assistant_text=done_text,
                 action=None
             )
         
         # Get next field
         next_field = session_service.get_current_field(req.session_id)
         if not next_field:
+            fallback_done = await _translate_if_needed("The form is complete.", user_lang, sarvam)
             return ChatResponse(
-                assistant_text="The form is complete.",
+                assistant_text=fallback_done,
                 action=None
             )
         
         # Ask for next field value
         next_instruction = f"Now please say the value for {next_field.label}."
+        if user_lang != "en":
+            try:
+                next_instruction = await sarvam.translate_text(next_instruction, target_language=user_lang)
+            except Exception as e:
+                logger.warning(f"Translation failed for next instruction lang={user_lang}: {e}")
         
         return ChatResponse(
             assistant_text=next_instruction,
