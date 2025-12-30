@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import Response as StarletteResponse
 import logging
-
+import os
 from app.routes.health import router as health_router
 from app.routes.analyze import router as analyze_router
 from app.routes.chat import router as chat_router
