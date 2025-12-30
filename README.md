@@ -1,143 +1,155 @@
-# Speak2Fill — Voice‑First AI Assistant for Filling Paper Forms
+# Speak2Fill — AI-Powered Voice Form Filling
 
-Speak2Fill helps people who struggle with reading/writing (illiteracy, low literacy, or language barriers) correctly fill essential paper forms—bank challans, government applications, hospital forms, college documents—independently and with dignity.
+Speak2Fill is an innovative application that enables users to fill paper forms using voice commands. It leverages AI to analyze form images, extract fields, and guide users through filling them via speech-to-text and text-to-speech in multiple languages.
 
-Users take a photo of a paper form, then the system guides them step‑by‑step (voice-first, in their native language) on what to write and *where to write it*.
+## Features
 
-## Why this matters
+- **Form Analysis**: Upload a form image and automatically detect fillable fields using OCR and AI.
+- **Voice Guidance**: Step-by-step voice instructions in native languages (Malayalam, English, Hindi, etc.).
+- **Speech-to-Text**: Convert user speech to text for form filling.
+- **Text-to-Speech**: Provide audio feedback and instructions.
+- **Multi-Language Support**: Supports Malayalam, English, Hindi, Tamil, Telugu.
+- **Cross-Platform**: Works on web, Android, and iOS via Flutter.
 
-Millions of people rely on third parties to fill forms, face frequent mistakes, or are denied services because they can’t confidently read/understand the form. Speak2Fill focuses on accessibility, inclusivity, and reducing dependence—without changing the physical workflow (people still write by hand on paper).
+## Architecture
 
-## System overview
+### Frontend (Flutter)
+- **Platform**: Web, Android, iOS
+- **Key Components**:
+  - `SttService`: Handles speech-to-text recording and API calls.
+  - `TtsService`: Manages text-to-speech playback.
+  - Screens: Form upload, analysis, guided filling.
+- **Libraries**: `record` for audio recording, `audioplayers` for playback, `http` for API communication.
 
-**Frontend (Flutter: Android / iOS / Web)**
-- Captures or uploads a form image
-- Talks to the backend via JSON APIs
-- Renders “whiteboard guidance” on top of the form image (canvas overlay)
-- Speaks/plays back assistant guidance in the user’s language
+### Backend (FastAPI)
+- **Platform**: Python with FastAPI
+- **Key Routes**:
+  - `/health`: Health check.
+  - `/analyze-form`: Analyze uploaded form image, extract fields.
+  - `/chat`: Handle conversational form filling logic.
+  - `/stt`: Speech-to-text conversion.
+  - `/tts`: Text-to-speech synthesis.
+- **Services**:
+  - `SarvamService`: Integrates Sarvam AI for STT, TTS, and LLM.
+  - `GeminiService`: Uses Google Gemini for form field analysis.
+  - `SessionService`: Manages user sessions and form state.
+  - `StorageService`: In-memory storage for sessions and logs.
 
-**Backend (Python FastAPI)**
-- Receives the form image
-- Runs PaddleOCR (CPU) to extract text + bounding boxes
-- Infers likely “field labels” (best‑effort heuristic in MVP)
-- Stores extracted structure in an in‑memory session (dictionary)
-- Produces “whiteboard actions” that the frontend can render
+### AI Services
+- **Sarvam AI**: Provides STT (Saarika), TTS (Bulbul), and LLM (Sarvam-M) capabilities.
+- **Google Gemini**: Analyzes OCR data to identify form fields.
 
-**AI reasoning layer (Gemini — planned, mocked for now)**
-- Maintains conversation context
-- Decides what information to ask next
-- Decides which form field should be filled next
+## Prerequisites
 
-> Hackathon note: LLM logic is intentionally mocked/simplified in the current backend to keep the system fast, cheap, and deployable on CPU.
+- Python 3.10+
+- Flutter 3.10+
+- API Keys: `SARVAM_API_KEY`, `GEMINI_API_KEY`
 
-## Repository layout
+## Setup
 
-- `backend/` — FastAPI + PaddleOCR backend
-- `frontend/` — Flutter app (not scaffolded yet in this repo)
+### Backend
 
-## Backend APIs (current)
+1. Navigate to the backend directory:
+   ```
+   cd backend
+   ```
 
-### `GET /health`
-Returns:
-```json
-{ "status": "ok" }
-```
+2. Create a virtual environment:
+   ```
+   python -m venv .venv
+   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   ```
 
-### `POST /upload-form`
-**Input:** multipart form upload
-- `file`: image (`image/png`, `image/jpeg`, ...)
+3. Install dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
 
-**Behavior:**
-- Runs PaddleOCR
-- Extracts text + bounding boxes
-- Infers field-like labels (heuristic)
-- Creates a new in-memory session
+4. Set environment variables:
+   Create a `.env` file with:
+   ```
+   SARVAM_API_KEY=your_sarvam_api_key
+   GEMINI_API_KEY=your_gemini_api_key
+   ```
 
-**Output:**
-```json
-{
-  "session_id": "string",
-  "fields": [
-    { "label": "Name", "text": "", "bbox": [10, 20, 200, 60] }
-  ]
-}
-```
+5. Run the server:
+   ```
+   uvicorn app.main:app --host 0.0.0.0 --port 8000
+   ```
 
-### `POST /chat`
-**Input:**
-```json
-{ "session_id": "string", "user_message": "string" }
-```
+### Frontend
 
-**Behavior (MVP):**
-- Loads session
-- Picks the “current field”
-- Returns a mocked assistant message
-- Returns an optional “whiteboard action” to guide handwriting
+1. Navigate to the frontend directory:
+   ```
+   cd frontend
+   ```
 
-**Output:**
-```json
-{
-  "reply_text": "Please fill Name in the highlighted box.",
-  "action": {
-    "type": "DRAW_GUIDE",
-    "text": "RAVI KUMAR",
-    "bbox": [10, 20, 200, 60]
-  }
-}
-```
+2. Install dependencies:
+   ```
+   flutter pub get
+   ```
 
-## Running the backend
+3. Run the app:
+   - For web: `flutter run -d chrome --web-port 5000`
+   - For Android/iOS: `flutter run`
 
-### 1) Install dependencies
+## Usage
 
-```bash
-cd backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+1. **Upload Form**: Take a photo or upload an image of the paper form.
+2. **Analyze**: The backend processes the image, extracts text via OCR, and identifies fields using Gemini.
+3. **Guided Filling**: The app guides the user voice-by-voice:
+   - Asks for field values via TTS.
+   - Records user speech via STT.
+   - Extracts values using Sarvam LLM.
+   - Provides writing instructions.
+4. **Completion**: User fills the form manually based on guidance.
 
-### 2) Start the server
+## API Endpoints
 
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
+### Health
+- `GET /health`
+- Response: `{"status": "ok"}`
 
-### 3) Quick smoke test
+### Analyze Form
+- `POST /analyze-form`
+- Input: Multipart form with `file` (image).
+- Response: Form fields with labels, bboxes, etc.
 
-```bash
-curl http://127.0.0.1:8000/health
-```
+### Chat
+- `POST /chat`
+- Input: JSON with session_id, event, user_text.
+- Response: Assistant text and actions.
 
-## Running backend tests
+### Speech-to-Text
+- `POST /stt`
+- Input: Multipart with `audio` (wav) and `language`.
+- Response: `{"transcript": "...", "language": "..."}`
 
-The backend includes pytest tests that verify the endpoints behave correctly. OCR is mocked in tests so they run fast and deterministically.
+### Text-to-Speech
+- `POST /tts`
+- Input: JSON with `text`, `language`, `voice`.
+- Response: Audio binary (MPEG).
 
-```bash
-cd backend
-python -m pytest
-```
+## Development
 
-## Configuration
+- **Testing**: Run `pytest` in backend.
+- **Linting**: Use `flutter analyze` for frontend.
+- **Build**: `flutter build web` for production.
 
-The backend is designed to be minimal and stateless over HTTP. Sessions are stored in RAM (dictionary), so restarting the process clears sessions.
+## Contributing
 
-Optional environment variables:
-- `DISABLE_MODEL_SOURCE_CHECK=True` — skips Paddle model source connectivity checks if they slow down startup.
+1. Fork the repository.
+2. Create a feature branch.
+3. Commit changes.
+4. Push and create a PR.
 
-See `.env.example` for a small template.
+## License
 
-## Deployment notes (CPU-friendly)
+MIT License.
 
-- PaddleOCR runs in CPU mode.
-- First OCR call may download model weights.
-- For Hugging Face Spaces (CPU), prefer keeping the container/process warm and caching model downloads between restarts when possible.
+## Acknowledgments
 
-## Roadmap (next)
-
-- Integrate Gemini for multilingual conversational flow
-- Improve field detection heuristics (key-value association, layout grouping)
-- Add support for multiple languages (OCR language models + speech)
-- Improve UI guidance actions (multiple guide steps, confirmations)
+- Sarvam AI for multilingual AI services.
+- Google Gemini for advanced analysis.
+- Flutter and FastAPI communities.
 

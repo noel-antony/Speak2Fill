@@ -14,7 +14,7 @@ class FormField(BaseModel):
     label: str = Field(..., description="Human-readable field label, e.g., Name, DOB")
     bbox: List[int] = Field(..., min_length=4, max_length=4, description="[x1,y1,x2,y2]")
     input_mode: str = Field("voice", description="voice or placeholder")
-    write_language: str = Field("en", description="en, ml, or numeric")
+    write_language: str = Field("ml", description="en, ml, or numeric")
 
 
 class OcrItem(BaseModel):
@@ -33,18 +33,19 @@ class UploadFormResponse(BaseModel):
 
 class ChatRequest(BaseModel):
     session_id: str = Field(..., description="Session identifier")
-    user_message: str = Field(..., description="User's transcribed voice input or text message")
+    event: Literal["USER_SPOKE", "CONFIRM_DONE"] = Field(..., description="Event type")
+    user_text: Optional[str] = Field(None, description="Transcribed user speech (required for USER_SPOKE)")
 
 
 class DrawGuideAction(BaseModel):
     type: Literal["DRAW_GUIDE"] = Field("DRAW_GUIDE", description="Action type")
-    field_label: str = Field(..., description="Human-readable field label")
-    text_to_write: str = Field(..., description="Text user should write (empty for placeholder fields)")
+    field_id: str = Field(..., description="Field identifier")
+    text_to_write: str = Field(..., description="Text user should write")
     bbox: List[int] = Field(..., min_length=4, max_length=4, description="[x1,y1,x2,y2] where to write")
     image_width: int = Field(..., description="Image width for coordinate scaling")
     image_height: int = Field(..., description="Image height for coordinate scaling")
 
 
 class ChatResponse(BaseModel):
-    assistant_text: str = Field(..., description="Spoken/displayed assistant instruction")
+    assistant_text: str = Field(..., description="Instruction text to display and speak")
     action: Optional[DrawGuideAction] = Field(None, description="Visual guidance action for frontend")

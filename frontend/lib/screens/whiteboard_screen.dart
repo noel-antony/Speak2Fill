@@ -1,30 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:typed_data';
-import 'package:flutter/foundation.dart' show kIsWeb, defaultTargetPlatform, TargetPlatform;
 
-const String backendBaseUrl = 'http://localhost:8000';
+const String backendBaseUrl = 'http://192.168.1.100:8000';
 
-/// WhiteboardScreen - Visual guidance for where and what to write
-///
-/// Uses device + orientation specific FIXED image dimensions to avoid bbox drift.
+/// WhiteboardScreen - Shows form image with highlighted field bbox
 class WhiteboardScreen extends StatefulWidget {
-  /// The text the user should write in this field
   final String textToWrite;
-
-  /// Bounding box from backend response: [x1, y1, x2, y2] in image coordinates
   final List<double> boundingBox;
-
-  /// Original image width from backend /analyze-form
   final double imageWidth;
-
-  /// Original image height from backend /analyze-form
   final double imageHeight;
-
-  /// Field label from backend response
   final String fieldLabel;
-
-  /// Session ID for fetching the original image via GET /session/{session_id}/image
   final String sessionId;
 
   const WhiteboardScreen({
@@ -47,44 +33,19 @@ class _WhiteboardScreenState extends State<WhiteboardScreen> {
   @override
   void initState() {
     super.initState();
-    // Explicitly fetch the image from backend when screen opens
     _imageFuture = _fetchSessionImage();
-  }
-
-  /// Determine fixed image width based on device and orientation rules
-  double _fixedWidth(bool isPortrait) {
-    if (kIsWeb) {
-      return isPortrait ? 600.0 : 900.0;
-    }
-
-    switch (defaultTargetPlatform) {
-      case TargetPlatform.android:
-      case TargetPlatform.iOS:
-        return isPortrait ? 360.0 : 420.0;
-      case TargetPlatform.macOS:
-      case TargetPlatform.windows:
-      case TargetPlatform.linux:
-        return isPortrait ? 420.0 : 600.0;
-      case TargetPlatform.fuchsia:
-        // Treat like desktop defaults
-        return isPortrait ? 420.0 : 600.0;
-    }
   }
 
   Future<Uint8List?> _fetchSessionImage() async {
     final url = '$backendBaseUrl/session/${widget.sessionId}/image';
-    debugPrint('DEBUG: Fetching image from: $url');
     try {
       final response = await http.get(Uri.parse(url));
       if (response.statusCode == 200) {
-        debugPrint('DEBUG: Image fetched successfully, size: ${response.bodyBytes.length} bytes');
         return response.bodyBytes;
-      } else {
-        debugPrint('DEBUG: Image fetch failed with status ${response.statusCode}');
-        return null;
       }
+      return null;
     } catch (e) {
-      debugPrint('DEBUG: Image fetch error: $e');
+      debugPrint('Image fetch error: $e');
       return null;
     }
   }
@@ -96,7 +57,7 @@ class _WhiteboardScreenState extends State<WhiteboardScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // Top button bar
+            // Top button
             Padding(
               padding: const EdgeInsets.all(16),
               child: SizedBox(
@@ -104,174 +65,174 @@ class _WhiteboardScreenState extends State<WhiteboardScreen> {
                 height: 48,
                 child: FilledButton.icon(
                   onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.check_circle_outline),
+                  icon: const Icon(Icons.check_circle),
                   label: const Text('I WROTE IT'),
                   style: FilledButton.styleFrom(
                     backgroundColor: Theme.of(context).colorScheme.secondary,
-                    foregroundColor: Colors.white,
-                    elevation: 0,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                   ),
                 ),
               ),
             ),
             
-            // Image + Instructions area (fixed size, orientation-aware)
-            FutureBuilder<Uint8List?>(
-              future: _imageFuture,
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(
-                    child: CircularProgressIndicator(),
-                  );
-                }
-                
-                if (snapshot.hasError || snapshot.data == null) {
-                  debugPrint('DEBUG: Image load error or null data');
-                  return Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.error, color: Colors.red, size: 48),
-                        const SizedBox(height: 16),
-                        Text('Failed to load image\n${snapshot.error}', textAlign: TextAlign.center),
-                      ],
-                    ),
-                  );
-                }
-
-                final isPortrait = widget.imageWidth <= widget.imageHeight;
-                final fixedWidth = _fixedWidth(isPortrait);
-                final aspectRatio = widget.imageWidth / widget.imageHeight;
-                final fixedHeight = fixedWidth / aspectRatio;
-
-                debugPrint('DEBUG: Layout - isPortrait=$isPortrait, fixedWidth=$fixedWidth, fixedHeight=$fixedHeight');
-
-                final imageBox = SizedBox(
-                  width: fixedWidth,
-                  height: fixedHeight,
-                  child: Stack(
-                    children: [
-                      // Image rendered at fixed size
-                      Image.memory(
-                        snapshot.data!,
-                        width: fixedWidth,
-                        height: fixedHeight,
-                        fit: BoxFit.fill,
+            // Image area
+            Expanded(
+              child: FutureBuilder<Uint8List?>(
+                future: _imageFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  
+                  if (snapshot.hasError || snapshot.data == null) {
+                    return const Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.error, color: Colors.red, size: 48),
+                          SizedBox(height: 16),
+                          Text('Failed to load image'),
+                        ],
                       ),
-                      // Bbox overlay (same fixed size)
-                      CustomPaint(
-                        size: Size(fixedWidth, fixedHeight),
-                        painter: SimpleBboxPainter(
-                          boundingBox: widget.boundingBox,
-                          imageWidth: widget.imageWidth,
-                          imageHeight: widget.imageHeight,
-                          fieldLabel: widget.fieldLabel,
-                        ),
-                      ),
-                    ],
-                  ),
-                );
+                    );
+                  }
 
-                final instructionsPanel = Container(
-                  padding: const EdgeInsets.all(16),
-                  constraints: BoxConstraints(
-                    // Panel width: for portrait, match image width; for landscape, cap to 360
-                    maxWidth: isPortrait ? fixedWidth : 360.0,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).cardColor,
-                    borderRadius: BorderRadius.circular(16),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.08),
-                        blurRadius: 12,
-                        offset: const Offset(0, 4),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        'Instruction',
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.bold,
-                              color: Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
-                            ),
-                      ),
-                      const SizedBox(height: 8),
-                      RichText(
-                        text: TextSpan(
-                          style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                                fontWeight: FontWeight.w600,
-                                color: Theme.of(context).colorScheme.onSurface,
-                              ),
+                  return SingleChildScrollView(
+                    child: Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
                           children: [
-                            const TextSpan(text: 'Write '),
-                            TextSpan(
-                              text: widget.textToWrite.isEmpty ? '(any value)' : widget.textToWrite,
-                              style: TextStyle(
-                                color: Theme.of(context).colorScheme.primary,
-                                backgroundColor: Theme.of(context).colorScheme.primary.withOpacity(0.1),
-                              ),
-                            ),
-                            TextSpan(text: ' in the box labeled '),
-                            TextSpan(
-                              text: '"${widget.fieldLabel}"',
-                              style: const TextStyle(fontWeight: FontWeight.bold),
-                            ),
+                            _buildInstructionCard(),
+                            const SizedBox(height: 16),
+                            _buildImageWithBbox(snapshot.data!),
                           ],
                         ),
                       ),
-                    ],
-                  ),
-                );
-
-                if (isPortrait) {
-                  // Vertical layout: Instructions above Image
-                  return Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        instructionsPanel,
-                        const SizedBox(height: 16),
-                        imageBox,
-                      ],
                     ),
                   );
-                } else {
-                  // Horizontal layout: Image | Instructions
-                  return Center(
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        imageBox,
-                        const SizedBox(width: 24),
-                        instructionsPanel,
-                      ],
-                    ),
-                  );
-                }
-              },
+                },
+              ),
             ),
           ],
         ),
       ),
     );
   }
+
+  Widget _buildInstructionCard() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      constraints: const BoxConstraints(maxWidth: 600),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.1),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Instruction',
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+          ),
+          const SizedBox(height: 8),
+          RichText(
+            text: TextSpan(
+              style: Theme.of(context).textTheme.bodyLarge,
+              children: [
+                const TextSpan(text: 'Write '),
+                TextSpan(
+                  text: widget.textToWrite.isEmpty
+                      ? '(any value)'
+                      : widget.textToWrite,
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                ),
+                const TextSpan(text: ' in the '),
+                TextSpan(
+                  text: '"${widget.fieldLabel}"',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const TextSpan(text: ' box'),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildImageWithBbox(Uint8List imageBytes) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Calculate display size
+        final maxWidth = constraints.maxWidth;
+        final aspectRatio = widget.imageWidth / widget.imageHeight;
+        final displayWidth = maxWidth.clamp(300.0, 1200.0);
+        final displayHeight = displayWidth / aspectRatio;
+
+        return Container(
+          width: displayWidth,
+          height: displayHeight,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.2),
+                blurRadius: 20,
+                offset: const Offset(0, 10),
+              ),
+            ],
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(16),
+            child: Stack(
+              children: [
+                // Image
+                Image.memory(
+                  imageBytes,
+                  width: displayWidth,
+                  height: displayHeight,
+                  fit: BoxFit.contain,
+                ),
+                // Bbox overlay
+                CustomPaint(
+                  size: Size(displayWidth, displayHeight),
+                  painter: BboxPainter(
+                    boundingBox: widget.boundingBox,
+                    imageWidth: widget.imageWidth,
+                    imageHeight: widget.imageHeight,
+                    fieldLabel: widget.fieldLabel,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
 }
 
-/// Simple painter that draws only a bbox highlight and label on top of image
-class SimpleBboxPainter extends CustomPainter {
+/// Simple bbox painter - scales bbox from original image coordinates to display coordinates
+class BboxPainter extends CustomPainter {
   final List<double> boundingBox;
   final double imageWidth;
   final double imageHeight;
   final String fieldLabel;
 
-  SimpleBboxPainter({
+  BboxPainter({
     required this.boundingBox,
     required this.imageWidth,
     required this.imageHeight,
@@ -280,98 +241,64 @@ class SimpleBboxPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (boundingBox.length < 4) {
-      debugPrintStack(label: 'SimpleBboxPainter: boundingBox has ${boundingBox.length} elements, expected 4');
-      return;
-    }
+    if (boundingBox.length < 4) return;
 
-    // Scale bbox coordinates from image space to canvas space
-    // Since we use fixed dimensions, this scale factor is constant
+    // Scale bbox from original image coordinates to display coordinates
     final scaleX = size.width / imageWidth;
     final scaleY = size.height / imageHeight;
-    
-    debugPrint('DEBUG: BboxPainter - Canvas size: ${size.width}x${size.height}');
-    debugPrint('DEBUG: BboxPainter - Image size: ${imageWidth}x${imageHeight}');
-    debugPrint('DEBUG: BboxPainter - Scale factors: scaleX=$scaleX, scaleY=$scaleY');
-    debugPrint('DEBUG: BboxPainter - Original bbox: $boundingBox');
 
-    final double x1 = boundingBox[0] * scaleX;
-    final double y1 = boundingBox[1] * scaleY;
-    final double x2 = boundingBox[2] * scaleX;
-    final double y2 = boundingBox[3] * scaleY;
+    final x1 = boundingBox[0] * scaleX;
+    final y1 = boundingBox[1] * scaleY;
+    final x2 = boundingBox[2] * scaleX;
+    final y2 = boundingBox[3] * scaleY;
 
-    final Rect rect = Rect.fromLTRB(x1, y1, x2, y2);
-    
-    debugPrint('DEBUG: BboxPainter - Scaled bbox rect: $rect');
+    final rect = Rect.fromLTRB(x1, y1, x2, y2);
 
     // Draw dimmed overlay outside bbox
-    _drawDimmedOverlay(canvas, size, rect);
-    
+    final overlayPaint = Paint()
+      ..color = Colors.black.withOpacity(0.7)
+      ..style = PaintingStyle.fill;
+
+    final path = Path()
+      ..addRect(Rect.fromLTWH(0, 0, size.width, size.height))
+      ..addRRect(RRect.fromRectAndRadius(rect.inflate(8), const Radius.circular(12)))
+      ..fillType = PathFillType.evenOdd;
+
+    canvas.drawPath(path, overlayPaint);
+
     // Draw highlight box
-    _drawHighlightBox(canvas, rect);
-    
-    // Draw field label tag
-    _drawFieldLabel(canvas, rect);
-  }
-
-  void _drawDimmedOverlay(Canvas canvas, Size size, Rect activeRect) {
-    final overlayPaint = Paint()
-      ..color = Colors.black.withOpacity(0.65)
+    final highlightPaint = Paint()
+      ..color = Colors.orange.withOpacity(0.3)
       ..style = PaintingStyle.fill;
 
-    // Draw path that covers entire canvas except the bbox
-    final path = Path()
-      ..addRect(Rect.fromLTWH(0, 0, size.width, size.height))
-      ..addRRect(RRect.fromRectAndRadius(
-        activeRect.inflate(10),
-        const Radius.circular(12),
-      ))
-      ..fillType = PathFillType.evenOdd;
-
-    canvas.drawPath(path, overlayPaint);
-  }
-
-  void _drawHighlightBox(Canvas canvas, Rect rect) {
-    // Glow effect
-    final glowPaint = Paint()
-      ..color = Colors.yellow.withOpacity(0.3)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 16
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10);
     canvas.drawRRect(
-      RRect.fromRectAndRadius(rect, const Radius.circular(6)),
-      glowPaint,
+      RRect.fromRectAndRadius(rect, const Radius.circular(8)),
+      highlightPaint,
     );
 
-    // Fill (light yellow)
-    final fillPaint = Paint()
-      ..color = const Color(0xFFFFF9C4).withOpacity(0.3)
-      ..style = PaintingStyle.fill;
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(rect, const Radius.circular(6)),
-      fillPaint,
-    );
-
-    // Border (orange/secondary)
+    // Draw border
     final borderPaint = Paint()
       ..color = Colors.orange
       ..style = PaintingStyle.stroke
       ..strokeWidth = 3;
+
     canvas.drawRRect(
-      RRect.fromRectAndRadius(rect, const Radius.circular(6)),
+      RRect.fromRectAndRadius(rect, const Radius.circular(8)),
       borderPaint,
     );
+
+    // Draw label
+    _drawLabel(canvas, rect);
   }
 
-  void _drawFieldLabel(Canvas canvas, Rect rect) {
+  void _drawLabel(Canvas canvas, Rect rect) {
     final textPainter = TextPainter(
       text: TextSpan(
-        text: fieldLabel.toUpperCase(),
+        text: fieldLabel,
         style: const TextStyle(
           color: Colors.white,
           fontSize: 14,
           fontWeight: FontWeight.bold,
-          letterSpacing: 1,
         ),
       ),
       textDirection: TextDirection.ltr,
@@ -379,219 +306,33 @@ class SimpleBboxPainter extends CustomPainter {
 
     textPainter.layout();
 
-    final offset = Offset(rect.left, rect.top - textPainter.height - 12);
-    
-    // Background tag (orange)
-    final labelBgPaint = Paint()
-      ..color = Colors.orange
-      ..style = PaintingStyle.fill;
-      
-    final labelRect = Rect.fromLTWH(
-      offset.dx, offset.dy,
-      textPainter.width + 16, textPainter.height + 8,
+    final labelWidth = textPainter.width + 16;
+    final labelHeight = textPainter.height + 8;
+    final labelTop = rect.top - labelHeight - 8;
+
+    // Label background
+    final bgRect = RRect.fromRectAndRadius(
+      Rect.fromLTWH(rect.left, labelTop, labelWidth, labelHeight),
+      const Radius.circular(8),
     );
 
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(labelRect, const Radius.circular(6)),
-      labelBgPaint,
-    );
+    final bgPaint = Paint()..color = Colors.orange;
 
-    textPainter.paint(canvas, offset + const Offset(8, 4));
+    canvas.drawRRect(bgRect, bgPaint);
+
+    // Label text
+    textPainter.paint(
+      canvas,
+      Offset(
+        rect.left + 8,
+        labelTop + 4,
+      ),
+    );
   }
 
   @override
-  bool shouldRepaint(covariant SimpleBboxPainter oldDelegate) {
-    return oldDelegate.boundingBox != boundingBox || oldDelegate.fieldLabel != fieldLabel;
+  bool shouldRepaint(covariant BboxPainter oldDelegate) {
+    return oldDelegate.boundingBox != boundingBox ||
+        oldDelegate.fieldLabel != fieldLabel;
   }
 }
-
-/// (Deprecated) Old WhiteboardPainter - kept for reference but no longer used
-class WhiteboardPainter extends CustomPainter {
-  final String textToWrite;
-  final List<double> boundingBox;
-  final double imageWidth;
-  final double imageHeight;
-  final String fieldLabel;
-
-  final Color overlayColor;
-  final Color highlightColor;
-  final Color borderColor;
-  final Color labelColor;
-
-  WhiteboardPainter({
-    required this.textToWrite,
-    required this.boundingBox,
-    required this.imageWidth,
-    required this.imageHeight,
-    required this.fieldLabel,
-    this.overlayColor = Colors.black54,
-    this.highlightColor = const Color(0xFFFFF9C4),
-    this.borderColor = Colors.orange,
-    this.labelColor = const Color(0xFF6C63FF),
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    // Guard: ensure bbox has 4 elements
-    if (boundingBox.length < 4) {
-      debugPrintStack(label: 'WhiteboardPainter: boundingBox has ${boundingBox.length} elements, expected 4');
-      final paint = Paint()..color = Colors.grey[300]!;
-      canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), paint);
-      return;
-    }
-
-    _drawFormBackground(canvas, size);
-
-    final double scaleX = size.width / imageWidth;
-    final double scaleY = size.height / imageHeight;
-
-    final double x1 = boundingBox[0] * scaleX;
-    final double y1 = boundingBox[1] * scaleY;
-    final double x2 = boundingBox[2] * scaleX;
-    final double y2 = boundingBox[3] * scaleY;
-
-    final Rect rect = Rect.fromLTRB(x1, y1, x2, y2);
-
-    _drawDimmedOverlay(canvas, size, rect);
-    _drawHighlightBox(canvas, rect);
-    _drawFieldLabel(canvas, rect);
-    _drawGuideText(canvas, rect);
-  }
-
-  void _drawFormBackground(Canvas canvas, Size size) {
-    final bgPaint = Paint()..color = Colors.white;
-    canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), bgPaint);
-
-    final linePaint = Paint()
-      ..color = Colors.grey.shade200
-      ..strokeWidth = 1;
-
-    for (double y = 40; y < size.height; y += 40) {
-      canvas.drawLine(Offset(20, y), Offset(size.width - 20, y), linePaint);
-    }
-  }
-
-  void _drawDimmedOverlay(Canvas canvas, Size size, Rect activeRect) {
-    final overlayPaint = Paint()
-      ..color = overlayColor
-      ..style = PaintingStyle.fill;
-
-    final path = Path()
-      ..addRect(Rect.fromLTWH(0, 0, size.width, size.height))
-      ..addRRect(RRect.fromRectAndRadius(
-        activeRect.inflate(10),
-        const Radius.circular(12),
-      ))
-      ..fillType = PathFillType.evenOdd;
-
-    canvas.drawPath(path, overlayPaint);
-  }
-
-  void _drawHighlightBox(Canvas canvas, Rect rect) {
-    // Glow
-    final glowPaint = Paint()
-      ..color = Colors.yellow.withOpacity(0.3)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 16
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 10);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(rect, const Radius.circular(12)),
-      glowPaint,
-    );
-
-    // Fill
-    final fillPaint = Paint()
-      ..color = highlightColor
-      ..style = PaintingStyle.fill;
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(rect, const Radius.circular(6)),
-      fillPaint,
-    );
-
-    // Border
-    final borderPaint = Paint()
-      ..color = borderColor
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3;
-    
-    // Dashed effect simulation (simple)
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(rect, const Radius.circular(6)),
-      borderPaint,
-    );
-  }
-
-  void _drawFieldLabel(Canvas canvas, Rect rect) {
-    final textPainter = TextPainter(
-      text: TextSpan(
-        text: fieldLabel.toUpperCase(),
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 14,
-          fontWeight: FontWeight.bold,
-          letterSpacing: 1,
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-    );
-
-    textPainter.layout();
-
-    final offset = Offset(rect.left, rect.top - textPainter.height - 12);
-    
-    // Background tag
-    final labelBgPaint = Paint()
-      ..color = labelColor
-      ..style = PaintingStyle.fill;
-      
-    final labelRect = Rect.fromLTWH(
-      offset.dx, offset.dy,
-      textPainter.width + 16, textPainter.height + 8,
-    );
-
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(labelRect, const Radius.circular(6)),
-      labelBgPaint,
-    );
-
-    textPainter.paint(canvas, offset + const Offset(8, 4));
-  }
-
-  void _drawGuideText(Canvas canvas, Rect rect) {
-    final fontSize = _calculateFontSize(rect);
-    final textPainter = TextPainter(
-      text: TextSpan(
-        text: textToWrite,
-        style: TextStyle(
-          color: Colors.black.withOpacity(0.2),
-          fontSize: fontSize,
-          fontWeight: FontWeight.w600,
-          letterSpacing: 4.0,
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-      textAlign: TextAlign.center,
-    );
-
-    textPainter.layout(maxWidth: rect.width - 8);
-
-    final offset = Offset(
-      rect.left + (rect.width - textPainter.width) / 2,
-      rect.top + (rect.height - textPainter.height) / 2,
-    );
-
-    textPainter.paint(canvas, offset);
-  }
-
-  double _calculateFontSize(Rect rect) {
-    final heightBasedSize = rect.height * 0.55;
-    return heightBasedSize.clamp(14.0, 36.0);
-  }
-
-  @override
-  bool shouldRepaint(covariant WhiteboardPainter oldDelegate) {
-    return oldDelegate.textToWrite != textToWrite ||
-        oldDelegate.boundingBox != boundingBox;
-  }
-}
-

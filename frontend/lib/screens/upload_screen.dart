@@ -5,9 +5,9 @@ import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'dart:convert';
 import '../main.dart';
-import 'chat_screen.dart';
+import 'form_filling_screen.dart';
 
-const String backendBaseUrl = 'http://localhost:8000';
+const String backendBaseUrl = 'http://192.168.1.100:8000';
 
 /// UploadScreen - Entry point of the app
 class UploadScreen extends StatelessWidget {
@@ -247,19 +247,18 @@ class UploadScreen extends StatelessWidget {
         if (resp.statusCode == 200) {
           final data = json.decode(resp.body) as Map<String, dynamic>;
           final sessionId = data['session_id'] as String?;
-          final imageWidth = (data['image_width'] as num?)?.toDouble();
-          final imageHeight = (data['image_height'] as num?)?.toDouble();
-          final fields = data['fields'] as List<dynamic>? ?? [];
+          final imageWidth = (data['image_width'] as num?)?.toInt();
+          final imageHeight = (data['image_height'] as num?)?.toInt();
 
           if (sessionId != null && imageWidth != null && imageHeight != null) {
             Navigator.push(
               context,
               MaterialPageRoute(
-                builder: (context) => ChatScreen(
+                builder: (context) => FormFillingScreen(
                   sessionId: sessionId,
+                  backendUrl: backendBaseUrl,
                   imageWidth: imageWidth,
                   imageHeight: imageHeight,
-                  fields: fields,
                 ),
               ),
             );

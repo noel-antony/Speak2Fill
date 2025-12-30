@@ -1,229 +1,144 @@
 """
 Chat endpoint - Deterministic state machine for form filling.
+NO Gemini. NO WebSockets.
+Uses Sarvam APIs: Saarika (STT), Sarvam-M (LLM), Bulbul (TTS)
 
-This endpoint handles ONE conversational turn per request.
-The backend controls ALL logic - Gemini is only used for polite text generation.
+State Machine:
+- ASK_INPUT: Ask user for field value via voice
+- AWAIT_CONFIRMATION: Wait for user to confirm they wrote it
 
-Flow:
-1. Load session state
-2. Check completion
-3. Get current field
-4. PHASE A (Data Collection): Collect value if needed
-5. PHASE B (Writing Guidance): Guide user to write
-6. Wait for confirmation, then advance
+Events:
+- USER_SPOKE: User provided voice input (after STT)
+- CONFIRM_DONE: User confirmed writing is complete
 """
-
-from fastapi import APIRouter, HTTPException
-
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from typing import Optional
 from app.schemas.models import ChatRequest, ChatResponse, DrawGuideAction
-from app.services.gemini_service import get_gemini_service
-from app.services.storage_service import store
+from app.services.sarvam_service import SarvamService
+from app.services.session_service import session_service, Phase
+import logging
 
+logger = logging.getLogger(__name__)
 router = APIRouter(tags=["chat"])
-
-# Confirmation keywords (language-agnostic)
-CONFIRMATION_WORDS = {"done", "finished", "ok", "completed", "yes", "next"}
-
-
-def _normalize_value(value: str, write_language: str) -> str:
-    """Normalize user input based on field language."""
-    value = value.strip()
-    
-    if write_language == "numeric":
-        # Extract only digits
-        return "".join(c for c in value if c.isdigit())
-    
-    # For en/ml, just clean whitespace
-    return " ".join(value.split())
-
-
-def _is_confirmation(user_message: str) -> bool:
-    """Check if user message is a confirmation keyword."""
-    normalized = user_message.strip().lower()
-    return normalized in CONFIRMATION_WORDS
 
 
 @router.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest) -> ChatResponse:
+async def chat(req: ChatRequest) -> ChatResponse:
     """
-    Handle one chat turn in the form-filling state machine.
+    Deterministic state machine for form filling.
     
-    The backend decides ALL logic:
-    - Which field is current
-    - Whether to collect data or guide writing
-    - When to advance to the next field
+    Request Events:
+    - USER_SPOKE: User provided voice input (after STT)
+    - CONFIRM_DONE: User confirmed writing is complete
     
-    Gemini is ONLY used to generate polite assistant text.
+    Two Phases:
+    - ASK_INPUT: Extract value from user speech
+    - AWAIT_CONFIRMATION: Wait for user to write and confirm
     """
     
     # ===== STEP 1: Load session state =====
-    session = store.get_session(req.session_id)
-    if session is None:
+    state = session_service.get_session(req.session_id)
+    if not state:
         raise HTTPException(status_code=404, detail="Session not found")
     
-    fields = session.get("fields", [])
-    image_width = session.get("image_width", 0)
-    image_height = session.get("image_height", 0)
-    
-    # Get current field index from DB
-    current_index = store.get_current_field_index(req.session_id)
-    if current_index is None:
-        current_index = 0
-    
-    # ===== STEP 2: Check if all fields completed =====
-    if current_index >= len(fields):
-        gemini = get_gemini_service()
-        assistant_text = gemini.generate_assistant_text(
-            phase="completion",
-            field_label="",
-            input_mode="",
-            write_language="",
+    # ===== STEP 2: Check if form is complete =====
+    if not session_service.has_more_fields(req.session_id):
+        return ChatResponse(
+            assistant_text="നിങ്ങൾ ഫോം പൂർത്തിയാക്കി. നന്ദി!",
+            action=None
         )
-        return ChatResponse(assistant_text=assistant_text, action=None)
     
     # ===== STEP 3: Get current field =====
-    current_field = fields[current_index]
-    field_id = current_field.get("field_id")
-    field_label = current_field.get("label")
-    bbox = current_field.get("bbox")
-    input_mode = current_field.get("input_mode", "voice")
-    write_language = current_field.get("write_language", "en")
+    current_field = session_service.get_current_field(req.session_id)
+    if not current_field:
+        raise HTTPException(status_code=500, detail="No current field")
     
-    # Get current stored value
-    current_value = store.get_field_value(req.session_id, field_id) or ""
+    sarvam = SarvamService()
     
-    gemini = get_gemini_service()
+    # ===== STATE MACHINE LOGIC =====
     
-    # ===== STEP 4: Check if user is confirming completion =====
-    if _is_confirmation(req.user_message):
-        # User confirmed they finished writing
-        # Advance to next field
-        store.advance_field_index(req.session_id)
-        
-        # Check if there's a next field
-        next_index = current_index + 1
-        if next_index >= len(fields):
-            # All fields complete
-            assistant_text = gemini.generate_assistant_text(
-                phase="completion",
-                field_label="",
-                input_mode="",
-                write_language="",
-            )
-            return ChatResponse(assistant_text=assistant_text, action=None)
-        
-        # Move to next field - start PHASE A (data collection)
-        next_field = fields[next_index]
-        next_field_id = next_field.get("field_id")
-        next_label = next_field.get("label")
-        next_bbox = next_field.get("bbox")
-        next_input_mode = next_field.get("input_mode", "voice")
-        next_write_language = next_field.get("write_language", "en")
-        
-        # If next field is placeholder, skip data collection
-        if next_input_mode == "placeholder":
-            assistant_text = gemini.generate_assistant_text(
-                phase="writing_guide",
-                field_label=next_label,
-                input_mode=next_input_mode,
-                write_language=next_write_language,
-                value="",
-            )
+    if state.phase == Phase.ASK_INPUT:
+        # ===== PHASE: ASK_INPUT =====
+        if req.event != "USER_SPOKE":
+            # Invalid event for this phase
             return ChatResponse(
-                assistant_text=assistant_text,
-                action=DrawGuideAction(
-                    field_label=next_label,
-                    text_to_write="",
-                    bbox=next_bbox,
-                    image_width=image_width,
-                    image_height=image_height,
-                ),
+                assistant_text=f"ദയവായി {current_field.label} നു വേണ്ട മൂല്യം സംസാരിക്കുക.",
+                action=None
             )
         
-        # Voice field - ask for value
-        assistant_text = gemini.generate_assistant_text(
-            phase="collect_value",
-            field_label=next_label,
-            input_mode=next_input_mode,
-            write_language=next_write_language,
+        if not req.user_text:
+            raise HTTPException(status_code=400, detail="user_text required for USER_SPOKE event")
+        
+        # Extract value using Sarvam-M
+        extracted_value = await sarvam.extract_field_value(
+            field_label=current_field.label,
+            user_text=req.user_text,
+            write_language=current_field.write_language
         )
-        return ChatResponse(assistant_text=assistant_text, action=None)
-    
-    # ===== PHASE A: DATA COLLECTION =====
-    if not current_value:
-        # No value stored yet
-        
-        if input_mode == "placeholder":
-            # Placeholder fields don't collect data - go straight to writing guide
-            assistant_text = gemini.generate_assistant_text(
-                phase="writing_guide",
-                field_label=field_label,
-                input_mode=input_mode,
-                write_language=write_language,
-                value="",
-            )
-            return ChatResponse(
-                assistant_text=assistant_text,
-                action=DrawGuideAction(
-                    field_label=field_label,
-                    text_to_write="",
-                    bbox=bbox,
-                    image_width=image_width,
-                    image_height=image_height,
-                ),
-            )
-        
-        # Voice mode - collect value from user_message
-        normalized_value = _normalize_value(req.user_message, write_language)
-        
-        if not normalized_value:
-            # Empty value - ask again
-            assistant_text = gemini.generate_assistant_text(
-                phase="collect_value",
-                field_label=field_label,
-                input_mode=input_mode,
-                write_language=write_language,
-            )
-            return ChatResponse(assistant_text=assistant_text, action=None)
         
         # Store the value
-        store.set_field_value(req.session_id, field_id, normalized_value)
+        session_service.store_value(req.session_id, current_field.field_id, extracted_value)
         
-        # Move to PHASE B (writing guidance)
-        assistant_text = gemini.generate_assistant_text(
-            phase="writing_guide",
-            field_label=field_label,
-            input_mode=input_mode,
-            write_language=write_language,
-            value=normalized_value,
-        )
+        # Switch to AWAIT_CONFIRMATION phase
+        session_service.set_phase(req.session_id, Phase.AWAIT_CONFIRMATION)
+        
+        # Generate instruction text
+        instruction_text = f"ദയവായി ഹൈലൈറ്റ് ചെയ്ത ബോക്സിൽ {extracted_value} എഴുതുക."
+        
+        # Return with draw guide action
         return ChatResponse(
-            assistant_text=assistant_text,
+            assistant_text=instruction_text,
             action=DrawGuideAction(
-                field_label=field_label,
-                text_to_write=normalized_value,
-                bbox=bbox,
-                image_width=image_width,
-                image_height=image_height,
-            ),
+                type="DRAW_GUIDE",
+                field_id=current_field.field_id,
+                text_to_write=extracted_value,
+                bbox=current_field.bbox,
+                image_width=state.image_width,
+                image_height=state.image_height
+            )
         )
     
-    # ===== PHASE B: WRITING GUIDANCE (value already exists) =====
-    # User hasn't confirmed yet, repeat writing instruction
-    assistant_text = gemini.generate_assistant_text(
-        phase="writing_guide",
-        field_label=field_label,
-        input_mode=input_mode,
-        write_language=write_language,
-        value=current_value,
-    )
-    return ChatResponse(
-        assistant_text=assistant_text,
-        action=DrawGuideAction(
-            field_label=field_label,
-            text_to_write=current_value,
-            bbox=bbox,
-            image_width=image_width,
-            image_height=image_height,
-        ),
-    )
+    elif state.phase == Phase.AWAIT_CONFIRMATION:
+        # ===== PHASE: AWAIT_CONFIRMATION =====
+        if req.event != "CONFIRM_DONE":
+            # User is speaking when they should be confirming
+            return ChatResponse(
+                assistant_text="ദയവായി ആദ്യം എഴുതുക, പിന്നെ 'ഞാൻ എഴുതിച്ചു' ബട്ടൺ അമർത്തുക.",
+                action=DrawGuideAction(
+                    type="DRAW_GUIDE",
+                    field_id=current_field.field_id,
+                    text_to_write=state.collected_values.get(current_field.field_id, ""),
+                    bbox=current_field.bbox,
+                    image_width=state.image_width,
+                    image_height=state.image_height
+                )
+            )
+        
+        # User confirmed - advance to next field
+        session_service.advance_to_next_field(req.session_id)
+        
+        # Check if more fields remain
+        if not session_service.has_more_fields(req.session_id):
+            return ChatResponse(
+                assistant_text="ശബാശ്! ഫോം പൂർത്തിയായി.",
+                action=None
+            )
+        
+        # Get next field
+        next_field = session_service.get_current_field(req.session_id)
+        if not next_field:
+            return ChatResponse(
+                assistant_text="ഫോം പൂർത്തിയായി.",
+                action=None
+            )
+        
+        # Ask for next field value
+        next_instruction = f"ഇപ്പോൾ ദയവായി {next_field.label} നു വേണ്ട മൂല്യം സംസാരിക്കുക."
+        
+        return ChatResponse(
+            assistant_text=next_instruction,
+            action=None
+        )
+    
+    # Should not reach here
+    raise HTTPException(status_code=500, detail="Invalid state")

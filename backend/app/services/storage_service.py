@@ -43,7 +43,9 @@ def _init_db(conn: sqlite3.Connection) -> None:
             filled_fields_json TEXT NOT NULL DEFAULT '{}',
             language TEXT NOT NULL DEFAULT 'en',
             image_width INTEGER NOT NULL DEFAULT 0,
-            image_height INTEGER NOT NULL DEFAULT 0
+            image_height INTEGER NOT NULL DEFAULT 0,
+            phase TEXT NOT NULL DEFAULT 'COLLECT_DATA',
+            gemini_live_session_id TEXT
         );
         """
     )
@@ -54,6 +56,20 @@ def _init_db(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         # Column doesn't exist, add it
         conn.execute("ALTER TABLE sessions ADD COLUMN image_data BLOB")
+        conn.commit()
+
+    # Migration: Add phase column if missing
+    try:
+        conn.execute("SELECT phase FROM sessions LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE sessions ADD COLUMN phase TEXT NOT NULL DEFAULT 'COLLECT_DATA'")
+        conn.commit()
+
+    # Migration: Add gemini_live_session_id column if missing
+    try:
+        conn.execute("SELECT gemini_live_session_id FROM sessions LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE sessions ADD COLUMN gemini_live_session_id TEXT")
         conn.commit()
     
     conn.execute(
@@ -105,7 +121,7 @@ class SQLiteSessionStore:
 
         def _op(conn: sqlite3.Connection) -> str:
             conn.execute(
-                "INSERT INTO sessions(session_id, created_at, filename, image_data, ocr_items_json, fields_json, current_field_index, filled_fields_json, language, image_width, image_height) VALUES (?, ?, ?, ?, ?, ?, 0, '{}', 'en', ?, ?)",
+                "INSERT INTO sessions(session_id, created_at, filename, image_data, ocr_items_json, fields_json, current_field_index, filled_fields_json, language, image_width, image_height, phase, gemini_live_session_id) VALUES (?, ?, ?, ?, ?, ?, 0, '{}', 'en', ?, ?, 'COLLECT_DATA', NULL)",
                 (
                     session_id,
                     created_at,
@@ -125,7 +141,7 @@ class SQLiteSessionStore:
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         def _op(conn: sqlite3.Connection) -> Optional[Dict[str, Any]]:
             row = conn.execute(
-                "SELECT session_id, created_at, filename, ocr_items_json, fields_json, image_width, image_height FROM sessions WHERE session_id = ?",
+                "SELECT session_id, created_at, filename, ocr_items_json, fields_json, image_width, image_height, phase, gemini_live_session_id FROM sessions WHERE session_id = ?",
                 (session_id,),
             ).fetchone()
             if row is None:
@@ -149,6 +165,8 @@ class SQLiteSessionStore:
                 "fields": json.loads(row["fields_json"]),
                 "image_width": image_width,
                 "image_height": image_height,
+                "phase": row.get("phase") if isinstance(row, dict) else row["phase"],
+                "gemini_live_session_id": row.get("gemini_live_session_id") if isinstance(row, dict) else row["gemini_live_session_id"],
             }
 
         return self._with_db(_op)
@@ -256,6 +274,72 @@ class SQLiteSessionStore:
             conn.execute(
                 "UPDATE sessions SET current_field_index = current_field_index + 1 WHERE session_id = ?",
                 (session_id,),
+            )
+            conn.commit()
+
+        self._with_db(_op)
+
+    def get_phase(self, session_id: str) -> str:
+        """Get conversation phase: 'COLLECT_DATA' or 'AWAIT_CONFIRMATION'."""
+
+        def _op(conn: sqlite3.Connection) -> str:
+            row = conn.execute(
+                "SELECT phase FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return "COLLECT_DATA"
+            return str(row["phase"]) or "COLLECT_DATA"
+
+        return self._with_db(_op)
+
+    def set_phase(self, session_id: str, phase: str) -> None:
+        """Set conversation phase."""
+
+        def _op(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE sessions SET phase = ? WHERE session_id = ?",
+                (phase, session_id),
+            )
+            conn.commit()
+
+        self._with_db(_op)
+
+    def get_gemini_live_session_id(self, session_id: str) -> Optional[str]:
+        """Get Gemini Live session id bound to Speak2Fill session."""
+
+        def _op(conn: sqlite3.Connection) -> Optional[str]:
+            row = conn.execute(
+                "SELECT gemini_live_session_id FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return row["gemini_live_session_id"]
+
+        return self._with_db(_op)
+
+    def set_gemini_live_session_id(self, session_id: str, live_session_id: str) -> None:
+        """Bind Gemini Live session id to Speak2Fill session."""
+
+        def _op(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE sessions SET gemini_live_session_id = ? WHERE session_id = ?",
+                (live_session_id, session_id),
+            )
+            conn.commit()
+
+        self._with_db(_op)
+
+    def log_message(self, session_id: str, role: str, content: str) -> None:
+        """Persist a chat message for auditing (role: 'user' | 'assistant' | 'system')."""
+
+        ts = time.time()
+
+        def _op(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "INSERT INTO messages(session_id, ts, role, content) VALUES (?, ?, ?, ?)",
+                (session_id, ts, role, content),
             )
             conn.commit()
 

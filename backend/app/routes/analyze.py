@@ -11,6 +11,7 @@ from PIL import Image
 from app.schemas.models import FormField, OcrItem, UploadFormResponse
 from app.services.gemini_service import get_gemini_service
 from app.services.storage_service import store
+from app.services.session_service import session_service, FormField as SessionFormField
 
 router = APIRouter(tags=["forms"])
 
@@ -303,6 +304,25 @@ async def analyze_form(file: UploadFile = File(...)) -> UploadFormResponse:
         image_width=image_width,
         image_height=image_height,
         image_data=image_bytes,  # Store original image
+    )
+
+    # Initialize session state for form filling
+    session_fields = [
+        SessionFormField(
+            field_id=field.field_id,
+            label=field.label,
+            bbox=field.bbox,
+            input_mode=field.input_mode,
+            write_language=field.write_language
+        )
+        for field in validated_fields
+    ]
+    
+    session_service.create_session(
+        session_id=session_id,
+        fields=session_fields,
+        image_width=image_width,
+        image_height=image_height
     )
 
     # Return clean, minimal response
